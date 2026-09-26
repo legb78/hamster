@@ -154,6 +154,17 @@ static class ParserTests
             Kinds(end, ActivityKind.SubagentActivity, ActivityKind.ToolFinished);
         });
 
+        T.Case("sous-agent au premier plan : ses evenements portent le toolUseId du meta.json, le fil principal jamais", () =>
+        {
+            var fg = Sub with { ForegroundToolUseId = "toolu_parent" };
+            var events = P(AssistantAs(Sub.AgentId, 2, "end_turn", Text("rapport")), fg);
+            Kinds(events, ActivityKind.SubagentActivity, ActivityKind.SubagentEnded);
+            T.True(events.All(e => e.ForegroundToolUseId == "toolu_parent"), "toolUseId sur chaque evenement");
+            T.True(P(Result(3, "r1", agentId: Sub.AgentId), Sub).All(e => e.ForegroundToolUseId == null), "agent de fond : null");
+            T.True(P(TaskNotification(20, "a0123456789abcdef", "completed"), Main with { ForegroundToolUseId = "x" })
+                .All(e => e.ForegroundToolUseId == null), "fil principal : null");
+        });
+
         T.Case("sous-agent : AskUserQuestion reste un outil", () =>
             Kinds(P(AssistantAs(Sub.AgentId, 2, "tool_use", ToolUse("AskUserQuestion", "q")), Sub), ActivityKind.SubagentActivity, ActivityKind.ToolStarted));
 

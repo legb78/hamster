@@ -256,6 +256,12 @@ public sealed class TranscriptWatcher : IDisposable
     /// <summary>
     /// On saute l'historique, sauf la fin (64 Ko) des fichiers ecrits dans les 10 dernieres
     /// minutes : de quoi savoir qu'une session travaille ou attend deja au lancement.
+    /// Le lot sort trie par heure : l'enumeration rend le transcript du parent avant ceux de
+    /// ses sous-agents, et la task-notification qui termine un agent passerait avant les
+    /// lignes de cet agent, qui le ranimeraient. Tri stable (OrderBy) : les evenements d'une
+    /// meme ligne, qui partagent leur heure, gardent leur ordre. Mesure sur les vrais
+    /// transcripts : 0,4 % des lignes datent d'avant une ligne precedente du meme fichier
+    /// (surtout des system api_error et des messages meta) ; le tri les range a leur heure.
     /// </summary>
     void InitialScan(List<ActivityEvent> batch)
     {
@@ -267,6 +273,10 @@ public sealed class TranscriptWatcher : IDisposable
             var t = Track(entry, primeFromEnd: true, now);
             if (t?.Source != null) Process(t, batch);
         }
+        if (batch.Count < 2) return;
+        var sorted = batch.OrderBy(e => e.Time).ToList();
+        batch.Clear();
+        batch.AddRange(sorted);
     }
 
     Tracked? Track(Entry entry, bool primeFromEnd, DateTime now)
@@ -353,7 +363,7 @@ public sealed class TranscriptWatcher : IDisposable
             {
                 t.MetaRetries++;
                 var again = TranscriptPaths.Classify(entry.Path, _root);
-                if (again?.AgentDescription != null) t.Source = again;
+                if (again != null && (again.AgentDescription != null || again.ForegroundToolUseId != null)) t.Source = again;
             }
             bool hot = now - t.LastWriteUtc <= HotWindow;
             if ((hot || entry.Length != t.Tail.Offset) && Process(t, batch)) _safetyReads++;

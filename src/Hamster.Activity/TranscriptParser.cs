@@ -247,7 +247,10 @@ public static class TranscriptParser
         public bool IsSubagent => source.AgentId != null;
 
         public void Add(ActivityKind kind, string? tool = null, bool isError = false, string? detail = null) =>
-            Events.Add(new ActivityEvent(time, kind, source.SessionId, source.AgentId, cwd, tool, isError, detail));
+            Events.Add(new ActivityEvent(time, kind, source.SessionId, source.AgentId, cwd, tool, isError, detail)
+            {
+                ForegroundToolUseId = source.AgentId != null ? source.ForegroundToolUseId : null,
+            });
 
         /// <summary>Fin de tour : pour un sous-agent, c'est sa fin tout court.</summary>
         public void End(string? reason) =>

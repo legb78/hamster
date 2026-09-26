@@ -206,6 +206,77 @@ static class WatcherTests
             finally { TempDir.Delete(root); }
         });
 
+        T.Case("amorcage : lot trie par heure (tri stable), la fin annoncee par le parent n'est plus perdue", () =>
+        {
+            string root = TempDir.Create("prime-order");
+            try
+            {
+                // l'enumeration rend le transcript du parent avant ceux des sous-agents
+                string file = SessionFile(root);
+                File.WriteAllText(file, Prompt(0) + "\n" + Assistant(0.5, "tool_use", ToolUse("Agent", "toolu_bg")) + "\n"
+                    + Result(0.6, "toolu_bg") + "\n" + TaskNotification(10, "bgagent", "completed") + "\n");
+                string sub = Path.Combine(root, "C--work-demo", Session, "subagents");
+                Directory.CreateDirectory(sub);
+                File.WriteAllText(Path.Combine(sub, "agent-bgagent.meta.json"), "{\"agentType\":\"general-purpose\",\"description\":\"Fond\",\"requestShape\":\"background\",\"toolUseId\":\"toolu_bg\"}");
+                File.WriteAllText(Path.Combine(sub, "agent-bgagent.jsonl"), UserString(1, "mission", agentId: "bgagent") + "\n"
+                    + AssistantAs("bgagent", 2, "tool_use", ToolUse("Bash", "bgb")) + "\n" + Result(3, "bgb", agentId: "bgagent") + "\n"
+                    // derniere ligne sur un stop_reason null : seule la task-notification dit la fin
+                    + AssistantAs("bgagent", 9, null, Text("rapport")) + "\n");
+                var (w, c) = Start(root);
+                using (w)
+                {
+                    T.True(c.WaitFor(e => e.Kind == ActivityKind.SubagentEnded, TimeSpan.FromSeconds(3)) != null, "lot d'amorcage recu");
+                    Thread.Sleep(200);
+                    T.Eq(1, c.Batches, "un seul lot");
+                    var all = c.All();
+                    T.True(all.Zip(all.Skip(1)).All(p => p.First.Time <= p.Second.Time), "heures croissantes");
+                    int end = all.FindIndex(e => e.Kind == ActivityKind.SubagentEnded);
+                    T.Eq(ActivityKind.PromptSubmitted, all[end + 1].Kind, "tri stable : la reprise suit la fin, comme dans la ligne");
+                    T.Eq("task-notification", all[end + 1].Detail, "reprise de la task-notification");
+
+                    var m = new ActivityModel();
+                    foreach (var e in all) m.Apply(e);
+                    T.Eq(0, m.Snapshot(T0.AddSeconds(11)).Minis.Count, "pas de mini fantome");
+                    T.Eq(PetState.Idle, m.Snapshot(T0.AddSeconds(200)).State, "pas de Working jusqu'a 30 min");
+                }
+            }
+            finally { TempDir.Delete(root); }
+        });
+
+        T.Case("sous-agent au premier plan : fini par le tool_result du parent (requestShape du meta.json)", () =>
+        {
+            string root = TempDir.Create("foreground");
+            try
+            {
+                string sub = Path.Combine(root, "C--work-demo", Session, "subagents");
+                Directory.CreateDirectory(sub);
+                File.WriteAllText(Path.Combine(sub, "agent-fg.meta.json"), "{\"agentType\":\"Explore\",\"description\":\"Premier plan\",\"requestShape\":\"foreground\",\"toolUseId\":\"toolu_fg\"}");
+                // fond : le resultat de l'outil Agent revient des le lancement, il ne dit pas la fin
+                File.WriteAllText(Path.Combine(sub, "agent-bg.meta.json"), "{\"agentType\":\"Explore\",\"description\":\"Fond\",\"requestShape\":\"background\",\"toolUseId\":\"toolu_bgl\"}");
+                // sans requestShape (versions plus anciennes) : pas de fin par le tool_result non plus
+                File.WriteAllText(Path.Combine(sub, "agent-old.meta.json"), "{\"agentType\":\"Explore\",\"description\":\"Ancien\",\"toolUseId\":\"toolu_old\"}");
+                foreach (var id in new[] { "fg", "bg", "old" })
+                    File.WriteAllText(Path.Combine(sub, "agent-" + id + ".jsonl"), UserString(2, "mission", agentId: id) + "\n"
+                        + AssistantAs(id, 3, "tool_use", ToolUse("Read", id + "r")) + "\n" + Result(4, id + "r", agentId: id) + "\n"
+                        + AssistantAs(id, 5, null, Text("rapport")) + "\n");
+                string file = SessionFile(root);
+                File.WriteAllText(file, Prompt(0) + "\n"
+                    + Assistant(1, "tool_use", ToolUse("Agent", "toolu_fg"), ToolUse("Agent", "toolu_bgl"), ToolUse("Agent", "toolu_old")) + "\n"
+                    + Result(1.5, "toolu_bgl") + "\n" + Result(1.6, "toolu_old") + "\n" + Result(6, "toolu_fg") + "\n");
+                var (w, c) = Start(root);
+                using (w)
+                {
+                    T.True(c.WaitFor(e => e.Kind == ActivityKind.ToolFinished && e.Detail == "toolu_fg", TimeSpan.FromSeconds(3)) != null, "lot recu");
+                    Thread.Sleep(200);
+                    var m = new ActivityModel();
+                    foreach (var e in c.All()) m.Apply(e);
+                    var ids = m.Snapshot(T0.AddSeconds(7)).Minis.Select(x => x.Id).OrderBy(x => x);
+                    T.Eq("bg,old", string.Join(",", ids), "l'agent au premier plan est fini, les autres non");
+                }
+            }
+            finally { TempDir.Delete(root); }
+        });
+
         T.Case("aucun verrou garde : l'ecrivain peut ouvrir en exclusif, renommer, effacer", () =>
         {
             string root = TempDir.Create("lock");

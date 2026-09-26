@@ -47,7 +47,7 @@ static class HookTests
         T.Case("notification_type retenus => NeedsUser, le reste ignore (idle_prompt compris)", () =>
         {
             var now = Jsonl.T0;
-            foreach (var type in new[] { "permission_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog" })
+            foreach (var type in new[] { "permission_prompt", "worker_permission_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog" })
             {
                 using var doc = JsonDocument.Parse(Payload(type));
                 var e = HookEventsWatcher.ToEvent(doc.RootElement, now);
@@ -145,6 +145,31 @@ static class HookTests
             finally { TempDir.Delete(dir); }
         });
 
+        T.Case("KnownSession : demande d'une session sans transcript connu ignoree, comptee dans Status", () =>
+        {
+            string dir = TempDir.Create("hook-known");
+            try
+            {
+                string path = Path.Combine(dir, "events.jsonl");
+                File.WriteAllText(path, "");
+                var model = new ActivityModel();
+                model.Apply(new ActivityEvent(Jsonl.T0, ActivityKind.PromptSubmitted, "connue", null, @"C:\work\demo", null, false, null));
+                var (w, c) = Start(path, x => x.KnownSession = model.KnowsSession);
+                using (w)
+                {
+                    Thread.Sleep(300);
+                    T.True(w.Status.Contains("0 ignorees"), "statut : " + w.Status);
+                    File.AppendAllText(path, Payload("permission_prompt", "inconnue") + "\n" + Payload("permission_prompt", "connue") + "\n");
+                    T.True(c.WaitFor(e => Needs(e, "connue"), TimeSpan.FromSeconds(3)) != null, "session connue transmise");
+                    Thread.Sleep(100);
+                    T.True(!c.All().Any(e => e.SessionId == "inconnue"), "session inconnue ignoree");
+                    T.True(w.Status.Contains("1 ignorees"), "statut : " + w.Status);
+                    T.True(!model.KnowsSession("inconnue") && model.KnowsSession("connue"), "KnowsSession");
+                }
+            }
+            finally { TempDir.Delete(dir); }
+        });
+
         T.Case("rotation au-dela du seuil : renomme en .1, le fichier recree est lu depuis le debut", () =>
         {
             string dir = TempDir.Create("hook-rotate");
@@ -237,7 +262,7 @@ static class HookTests
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(RepoRoot(), "Hooks", "settings-snippet.json")));
             var entry = doc.RootElement.GetProperty("hooks").GetProperty("Notification")[0];
-            T.Eq("permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog", entry.GetProperty("matcher").GetString(), "matcher");
+            T.Eq("permission_prompt|worker_permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog", entry.GetProperty("matcher").GetString(), "matcher");
             var hook = entry.GetProperty("hooks")[0];
             T.Eq("command", hook.GetProperty("type").GetString(), "type");
             T.Eq("sh \"$HOME/.hamster/hook.sh\"", hook.GetProperty("command").GetString(), "commande");

@@ -31,6 +31,8 @@ public sealed class ActivityModel
     {
         public readonly string Id = id;
         public string? Label;
+        /// <summary>Agent au premier plan : id du tool_use Agent du fil principal, dont le resultat le termine.</summary>
+        public string? ForegroundToolUseId;
         public bool Active;
         public DateTimeOffset Since, LastEvent;
         public DateTimeOffset? EndedAt;
@@ -67,8 +69,12 @@ public sealed class ActivityModel
         {
             if (!_sessions.TryGetValue(e.SessionId, out var s))
             {
-                // une fin de tache seule (Bash de fond, agent deja oublie) ne fait pas exister une session
-                if (e.Kind == ActivityKind.SubagentEnded) return;
+                // une fin de tache seule (Bash de fond, agent deja oublie) ne fait pas exister une
+                // session. Une demande du hook non plus : sans aucun evenement de transcript pour
+                // cette session, rien ne leverait jamais son attente (session non enregistree,
+                // transcripts hors du dossier suivi)
+                if (e.Kind is ActivityKind.SubagentEnded or ActivityKind.NeedsUser
+                    || (e.Kind == ActivityKind.TurnEnded && e.AgentId != null)) return;
                 s = new Session(e.SessionId);
                 _sessions.Add(e.SessionId, s);
             }
@@ -87,6 +93,16 @@ public sealed class ActivityModel
             // debut d'une periode d'activite : c'est l'age du mini de cette session
             if (!wasEngaged && Engaged(s)) s.ActiveSince = e.Time;
         }
+    }
+
+    /// <summary>
+    /// Vrai si un transcript a deja donne un evenement pour cette session (et qu'elle n'est
+    /// pas oubliee). Sans verrou externe : utilisable comme HookEventsWatcher.KnownSession.
+    /// </summary>
+    public bool KnowsSession(string sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return false;
+        lock (_gate) return _sessions.ContainsKey(sessionId);
     }
 
     /// <summary>Activite sans tenir compte des delais : tour en cours, attente ou sous-agent.</summary>
@@ -170,6 +186,11 @@ public sealed class ActivityModel
                 BeginWork(s, t, e.Kind, wasWaiting);
                 Finish(s.Tools, e.Detail);
                 if (e.IsError) s.ErrorUntil = Later(s.ErrorUntil, t + _o.ErrorDuration);
+                // resultat de l'outil Agent d'un sous-agent au premier plan : il a fini, meme si
+                // son transcript s'arrete sur un stop_reason null (erreur ou interruption comprises)
+                if (e.Detail != null)
+                    foreach (var a in s.Agents.Values)
+                        if (a.ForegroundToolUseId == e.Detail) End(a, t);
                 break;
             case ActivityKind.ApiError:
                 BeginWork(s, t, e.Kind, wasWaiting);
@@ -217,7 +238,16 @@ public sealed class ActivityModel
         var t = e.Time;
         if (e.Kind is ActivityKind.SubagentEnded or ActivityKind.TurnEnded)
         {
-            if (a != null) End(a, t);
+            // fin d'un agent encore inconnu (task-notification du parent lue avant les lignes de
+            // l'agent) : il nait fini, et ses lignes plus anciennes ne le ranimeront pas. Pour un
+            // Bash de fond, c'est une fiche inactive de plus, oubliee avec les autres
+            if (a == null)
+            {
+                a = new Agent(id) { Since = t };
+                s.Agents.Add(id, a);
+            }
+            if (e.ForegroundToolUseId != null) a.ForegroundToolUseId = e.ForegroundToolUseId;
+            End(a, t);
             return;
         }
         if (a == null)
@@ -225,6 +255,7 @@ public sealed class ActivityModel
             a = new Agent(id);
             s.Agents.Add(id, a);
         }
+        if (e.ForegroundToolUseId != null) a.ForegroundToolUseId = e.ForegroundToolUseId;
         if (t > a.LastEvent) a.LastEvent = t;
         if (e.Kind == ActivityKind.SubagentActivity && !string.IsNullOrWhiteSpace(e.Detail)) a.Label = e.Detail;
 
@@ -287,7 +318,7 @@ public sealed class ActivityModel
             var views = new List<View>(_sessions.Count);
             foreach (var s in _sessions.Values) views.Add(ViewOf(s, now));
 
-            var main = PickMain(views);
+            var main = PickMain(views, now);
             _mainId = main?.Session.Id;
 
             var minis = new List<MiniInfo>();
@@ -330,7 +361,7 @@ public sealed class ActivityModel
                 (gone ??= new()).Add(s.Id);
                 continue;
             }
-            if (s.Wait != Wait.None && now - s.WaitSince > _o.WaitingTimeout) s.Wait = Wait.None;
+            if (s.Wait != Wait.None && now - s.WaitSince > WaitTimeout(s.Wait)) s.Wait = Wait.None;
             List<string>? oldAgents = null;
             foreach (var a in s.Agents.Values)
                 if (now - a.LastEvent > _o.ForgetAfter) (oldAgents ??= new()).Add(a.Id);
@@ -339,13 +370,25 @@ public sealed class ActivityModel
         if (gone != null) foreach (var id in gone) _sessions.Remove(id);
     }
 
-    bool AgentActive(Agent a, DateTimeOffset now) => a.Active && now - a.LastEvent <= _o.SubagentTimeout;
+    /// <summary>
+    /// Question ou plan (Asked) : visibles dans le transcript, attente longue. Demande du hook
+    /// (Needs) : rien ne s'ecrit entre l'autorisation accordee et le tool_result, ni apres une
+    /// session tuee pendant l'attente, attente courte.
+    /// </summary>
+    TimeSpan WaitTimeout(Wait w) => w == Wait.Needs ? _o.NeedsUserTimeout : _o.WaitingTimeout;
+
+    /// <summary>
+    /// Muet avec un outil en suspens : l'outil peut etre long, SubagentTimeout. Muet sans outil
+    /// en suspens : comme le fil principal, WorkingTimeout (Claude Code ferme en plein travail).
+    /// </summary>
+    bool AgentActive(Agent a, DateTimeOffset now) =>
+        a.Active && now - a.LastEvent <= (a.Tools.Count > 0 ? _o.SubagentTimeout : _o.WorkingTimeout);
 
     View ViewOf(Session s, DateTimeOffset now)
     {
         bool agents = s.Agents.Values.Any(a => AgentActive(a, now));
         bool working = s.Busy && now - s.LastMainActivity <= _o.WorkingTimeout;
-        bool waiting = s.Wait != Wait.None && now - s.WaitSince <= _o.WaitingTimeout;
+        bool waiting = s.Wait != Wait.None && now - s.WaitSince <= WaitTimeout(s.Wait);
         bool active = waiting || working || agents;
 
         PetState? state =
@@ -358,30 +401,64 @@ public sealed class ActivityModel
     }
 
     /// <summary>
-    /// Session principale collante : on la garde tant qu'elle est active ou dans un transitoire,
-    /// sauf si une autre attend l'utilisateur et pas elle. Sinon la plus recente des actives.
+    /// Session principale collante : on la garde tant qu'elle est active ou dans un transitoire.
+    /// Une autre qui attend l'utilisateur prend sa place si cette attente est fraiche : moins de
+    /// FreshWaitWindow, ou commencee apres la derniere activite de la principale sans qu'une
+    /// session qui travaille se soit manifestee depuis. Une principale qui attend depuis plus
+    /// longtemps cede la place a une attente fraiche, sinon a une session active qui s'est
+    /// manifestee depuis le debut de son attente (session tuee pendant l'attente, outil
+    /// autorise qui tourne sans rien ecrire). Sans principale : l'attente fraiche la plus
+    /// recente, sinon la plus recente des actives, avec la meme regle si elle attend depuis
+    /// longtemps. Chaque changement est a sens unique : la session quittee ne remplit plus la
+    /// condition qui la ferait revenir, donc pas de va-et-vient d'une image a l'autre.
     /// </summary>
-    View? PickMain(List<View> views)
+    View? PickMain(List<View> views, DateTimeOffset now)
     {
+        var freshSince = now - _o.FreshWaitWindow;
         View? current = null;
         foreach (var v in views)
             if (v.Session.Id == _mainId && v.State != null) current = v;
 
         View? waiting = null;
         foreach (var v in views)
-            if (v.State == PetState.WaitingUser && v.Session.Id != current?.Session.Id
-                && (waiting is not { } w || v.Session.WaitSince > w.Session.WaitSince))
-                waiting = v;
+        {
+            if (v.State != PetState.WaitingUser || v.Session.Id == current?.Session.Id) continue;
+            var since = v.Session.WaitSince;
+            bool fresh = since >= freshSince
+                || (current is { } cur && since > cur.Session.LastEvent && Successor(views, v) == null);
+            if (fresh && (waiting is not { } w || since > w.Session.WaitSince)) waiting = v;
+        }
 
         if (current is { } c)
-            return c.State != PetState.WaitingUser && waiting != null ? waiting : c;
+        {
+            if (c.State != PetState.WaitingUser) return waiting ?? c;
+            if (c.Session.WaitSince >= freshSince) return c;
+            return waiting ?? Successor(views, c) ?? c;
+        }
         if (waiting != null) return waiting;
 
         View? latest = null;
         foreach (var v in views)
             if (v.Active && (latest is not { } l || v.Session.LastEvent > l.Session.LastEvent))
                 latest = v;
+        if (latest is { } last && last.State == PetState.WaitingUser && last.Session.WaitSince < freshSince)
+            return Successor(views, last) ?? last;
         return latest;
+    }
+
+    /// <summary>
+    /// La plus recente des sessions actives hors attente qui se sont manifestees depuis le
+    /// debut de l'attente de w, ou null.
+    /// </summary>
+    static View? Successor(List<View> views, View w)
+    {
+        View? best = null;
+        foreach (var v in views)
+            if (v.Active && v.State != PetState.WaitingUser && v.Session.Id != w.Session.Id
+                && v.Session.LastEvent > w.Session.WaitSince
+                && (best is not { } b || v.Session.LastEvent > b.Session.LastEvent))
+                best = v;
+        return best;
     }
 
     static string? FolderName(string? cwd)

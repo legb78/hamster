@@ -40,6 +40,22 @@ static class PathsTests
                 T.Eq("general-purpose", TranscriptPaths.Classify(Path.Combine(sub, "agent-def456.jsonl"), root)?.AgentDescription, "libelle");
             });
 
+            T.Case("sous-agent : toolUseId retenu seulement au premier plan (requestShape present et different de background)", () =>
+            {
+                string Fg(string id, string meta)
+                {
+                    File.WriteAllText(Path.Combine(sub, "agent-" + id + ".meta.json"), meta);
+                    return TranscriptPaths.Classify(Path.Combine(sub, "agent-" + id + ".jsonl"), root)?.ForegroundToolUseId ?? "null";
+                }
+                T.Eq("toolu_f", Fg("fore", "{\"agentType\":\"Explore\",\"requestShape\":\"foreground\",\"toolUseId\":\"toolu_f\"}"), "foreground");
+                T.Eq("toolu_n", Fg("neuf", "{\"agentType\":\"Explore\",\"requestShape\":\"autre-forme\",\"toolUseId\":\"toolu_n\"}"), "autre forme que background");
+                T.Eq("null", Fg("back", "{\"agentType\":\"Explore\",\"requestShape\":\"background\",\"toolUseId\":\"toolu_b\"}"), "background");
+                // mesure sur les vrais transcripts : sans requestShape, 9 agents sur 11 recoivent ce resultat des le lancement
+                T.Eq("null", Fg("vieux", "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_v\"}"), "requestShape absent");
+                T.Eq("null", Fg("sansid", "{\"agentType\":\"Explore\",\"requestShape\":\"foreground\"}"), "toolUseId absent");
+                T.Eq("Explore", TranscriptPaths.Classify(Path.Combine(sub, "agent-fore.jsonl"), root)?.AgentDescription, "libelle inchange");
+            });
+
             T.Case("sous-agent sans meta.json, ou meta illisible : libelle null", () =>
             {
                 T.Eq(new TranscriptSource(session, "nometa", null), TranscriptPaths.Classify(Path.Combine(sub, "agent-nometa.jsonl"), root), "sans meta");

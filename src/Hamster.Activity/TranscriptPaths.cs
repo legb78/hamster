@@ -7,7 +7,8 @@ namespace Hamster.Activity;
 ///   slug\sessionId.jsonl                                   session principale
 ///   slug\sessionId\subagents\agent-id.jsonl                sous-agent
 ///   slug\sessionId\subagents\workflows\wf\agent-id.jsonl   agent de workflow
-/// avec un agent-id.meta.json a cote de chaque agent. Le journal.jsonl des workflows n'est pas un agent.
+/// avec un agent-id.meta.json a cote de chaque agent (agentType, description, requestShape,
+/// toolUseId...). Le journal.jsonl des workflows n'est pas un agent.
 /// </summary>
 public static class TranscriptPaths
 {
@@ -43,31 +44,46 @@ public static class TranscriptPaths
                 && stem.StartsWith("agent-", StringComparison.Ordinal) && stem.Length > "agent-".Length)
             {
                 string agentId = stem["agent-".Length..];
-                string meta = Path.Combine(Path.GetDirectoryName(full)!, stem + ".meta.json");
-                return new TranscriptSource(parts[1], agentId, ReadAgentLabel(meta));
+                var meta = ReadAgentMeta(Path.Combine(Path.GetDirectoryName(full)!, stem + ".meta.json"));
+                return new TranscriptSource(parts[1], agentId, meta.Label) { ForegroundToolUseId = meta.ForegroundToolUseId };
             }
             return null;
         }
         catch (Exception) { return null; }
     }
 
-    /// <summary>description du meta.json, sinon agentType, sinon null (meta absent ou illisible).</summary>
-    internal static string? ReadAgentLabel(string metaPath)
+    /// <summary>
+    /// Meta absent ou illisible : (null, null).
+    /// Label : description, sinon agentType. ForegroundToolUseId : toolUseId, si requestShape
+    /// est present et different de "background" (valeurs observees : "background",
+    /// "foreground"). requestShape absent : null, car sur les transcripts mesures 9 de ces
+    /// agents sur 11 ont recu leur tool_result des le lancement, comme un agent de fond.
+    /// </summary>
+    internal static (string? Label, string? ForegroundToolUseId) ReadAgentMeta(string metaPath)
     {
         try
         {
-            if (!File.Exists(metaPath)) return null;
+            if (!File.Exists(metaPath)) return (null, null);
             using var fs = new FileStream(metaPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             // un meta.json fait quelques centaines d'octets : au-dela, ce n'est pas le fichier attendu
-            if (fs.Length > 64 * 1024) return null;
+            if (fs.Length > 64 * 1024) return (null, null);
             using var doc = JsonDocument.Parse(fs);
             var r = doc.RootElement;
-            if (r.ValueKind != JsonValueKind.Object) return null;
+            if (r.ValueKind != JsonValueKind.Object) return (null, null);
+            string? label = null;
             foreach (var name in new[] { "description", "agentType" })
-                if (r.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(v.GetString()))
-                    return v.GetString()!.Trim();
-            return null;
+                if (Str(r, name) is { } v && !string.IsNullOrWhiteSpace(v))
+                {
+                    label = v.Trim();
+                    break;
+                }
+            string? shape = Str(r, "requestShape");
+            string? toolUseId = shape != null && shape != "background" && Str(r, "toolUseId") is { Length: > 0 } id ? id : null;
+            return (label, toolUseId);
         }
-        catch (Exception) { return null; }
+        catch (Exception) { return (null, null); }
     }
+
+    static string? Str(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 }

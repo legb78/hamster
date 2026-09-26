@@ -26,7 +26,7 @@ static class ReplayTest
             long interpretErrorsBefore = Interlocked.Read(ref TranscriptParser.InterpretErrors);
             var model = new ActivityModel();
             var byKind = new SortedDictionary<ActivityKind, long>();
-            long files = 0, mainFiles = 0, agentFiles = 0, ignored = 0, withLabel = 0, bytes = 0, lines = 0;
+            long files = 0, mainFiles = 0, agentFiles = 0, ignored = 0, withLabel = 0, foreground = 0, bytes = 0, lines = 0, backwards = 0;
             long invalid = 0, trailing = 0, trailingActive = 0, unmatchedResults = 0, exceptions = 0, skippedBusy = 0;
             var scratch = new byte[256 * 1024];
 
@@ -37,8 +37,10 @@ static class ReplayTest
                 files++;
                 if (source.AgentId == null) mainFiles++; else agentFiles++;
                 if (source.AgentDescription != null) withLabel++;
+                if (source.ForegroundToolUseId != null) foreground++;
 
                 var started = new HashSet<string>(StringComparer.Ordinal);
+                var latest = DateTimeOffset.MinValue;
                 var tail = new TailFile(path, 0);
                 try
                 {
@@ -54,6 +56,8 @@ static class ReplayTest
                                 if (!valid) invalid++;
                                 foreach (var e in events)
                                 {
+                                    // evenement plus ancien qu'un precedent du meme fichier : le tri de l'amorcage le deplace
+                                    if (e.Time < latest) backwards++; else latest = e.Time;
                                     byKind[e.Kind] = byKind.GetValueOrDefault(e.Kind) + 1;
                                     if (e.Kind is ActivityKind.ToolStarted or ActivityKind.AskedUser && e.Detail != null) started.Add(e.Detail);
                                     if (e.Kind == ActivityKind.ToolFinished && (e.Detail == null || !started.Contains(e.Detail))) unmatchedResults++;
@@ -79,11 +83,12 @@ static class ReplayTest
             try { snap = model.Snapshot(DateTimeOffset.UtcNow); }
             catch (Exception) { exceptions++; }
 
-            Console.WriteLine($"      {files} transcripts ({mainFiles} sessions, {agentFiles} sous-agents dont {withLabel} avec libelle), {ignored} autres .jsonl ignores");
+            Console.WriteLine($"      {files} transcripts ({mainFiles} sessions, {agentFiles} sous-agents dont {withLabel} avec libelle et {foreground} au premier plan avec toolUseId), {ignored} autres .jsonl ignores");
             Console.WriteLine($"      {bytes / (1024.0 * 1024):F1} Mo, {lines} lignes en {sw.Elapsed.TotalSeconds:F1} s");
             Console.WriteLine("      evenements : " + string.Join(", ", byKind.Select(kv => $"{kv.Key} {kv.Value}")));
             Console.WriteLine($"      lignes non JSON {invalid}, fins sans saut de ligne {trailing} (+{trailingActive} fichiers en cours d'ecriture), fichiers occupes {skippedBusy}");
             Console.WriteLine($"      tool_result sans tool_use dans le meme fichier (information) : {unmatchedResults}");
+            Console.WriteLine($"      evenements plus anciens qu'un precedent du meme fichier (information) : {backwards}");
             if (snap != null)
                 Console.WriteLine($"      etat du modele a la fin : {snap.State}, {snap.Minis.Count} minis (+{snap.MinisOverflow}), session active : {snap.AnySessionActive}");
 

@@ -119,10 +119,34 @@ static class ModelTests
 
         T.Case("NeedsUser sans outil en suspens : n'importe quel evenement posterieur la leve", () =>
         {
-            var m = M(E(K.NeedsUser, 0, detail: "elicitation_dialog"));
-            T.Eq(PetState.WaitingUser, S(m, 1), "attente, meme sans transcript");
+            var m = M(E(K.PromptSubmitted, -1), E(K.NeedsUser, 0, detail: "elicitation_dialog"));
+            T.Eq(PetState.WaitingUser, S(m, 1), "attente");
             m.Apply(E(K.SessionActivity, 2));
             T.Eq(PetState.Working, S(m, 3), "levee");
+        });
+
+        T.Case("NeedsUser d'une session sans aucun evenement de transcript : ignore", () =>
+        {
+            // rien dans les transcripts ne pourrait lever cette attente
+            var m = M(E(K.NeedsUser, 0, session: "inconnue", detail: "permission_prompt"));
+            var s = m.Snapshot(At(1));
+            T.Eq(PetState.Idle, s.State, "etat");
+            T.Eq<string?>(null, s.MainSessionId, "principale");
+            T.Eq(false, s.AnySessionActive, "active");
+            T.Eq(0, s.Minis.Count, "minis");
+            // la session apparait ensuite dans un transcript : l'ancienne demande ne revient pas
+            m.Apply(E(K.PromptSubmitted, 2, session: "inconnue"));
+            T.Eq(PetState.Working, S(m, 3), "travail, pas d'attente");
+        });
+
+        T.Case("NeedsUser expire apres NeedsUserTimeout (10 min) ; AskedUser garde WaitingTimeout (1 h)", () =>
+        {
+            // session tuee pendant l'attente, ou outil autorise qui tourne sans rien ecrire
+            var m = M(E(K.PromptSubmitted, 0), E(K.ToolStarted, 1, tool: "Bash", detail: "b"), E(K.NeedsUser, 2, detail: "permission_prompt"));
+            T.Eq(PetState.WaitingUser, S(m, 601), "dans les 10 min");
+            T.Eq(PetState.Idle, S(m, 603), "au-dela");
+            var q = M(E(K.PromptSubmitted, 0), E(K.AskedUser, 2, tool: "AskUserQuestion", detail: "q"));
+            T.Eq(PetState.WaitingUser, S(q, 603), "question : toujours en attente");
         });
 
         T.Case("ToolFinished en erreur => Error 2 s, puis Working", () =>
@@ -196,7 +220,7 @@ static class ModelTests
         T.Case("garde-fou : session oubliee 2 h apres son dernier evenement", () =>
         {
             // attente reglee plus longue que l'oubli : seul l'oubli peut la faire disparaitre
-            var m = new ActivityModel(new ActivityOptions { WaitingTimeout = TimeSpan.FromHours(5) });
+            var m = new ActivityModel(new ActivityOptions { WaitingTimeout = TimeSpan.FromHours(5), NeedsUserTimeout = TimeSpan.FromHours(5) });
             m.Apply(E(K.PromptSubmitted, 0));
             m.Apply(E(K.NeedsUser, 10, detail: "permission_prompt"));
             T.Eq(PetState.WaitingUser, S(m, 7200), "encore la a 2 h moins 10 s");
@@ -206,8 +230,9 @@ static class ModelTests
 
         T.Case("une session qui a un sous-agent actif reste Working apres sa fin de tour", () =>
         {
+            // l'agent de fond a un outil en suspens : il vit jusqu'a SubagentTimeout
             var m = M(E(K.PromptSubmitted, 0), E(K.ToolStarted, 1, tool: "Agent", detail: "a1"), E(K.ToolFinished, 2, detail: "a1"),
-                E(K.SubagentActivity, 3, agent: "bg", detail: "fond"), E(K.TurnEnded, 4));
+                E(K.SubagentActivity, 3, agent: "bg", detail: "fond"), E(K.ToolStarted, 3, agent: "bg", tool: "Bash", detail: "bgb"), E(K.TurnEnded, 4));
             T.Eq(PetState.Celebrating, S(m, 5), "fete d'abord (priorite)");
             T.Eq(PetState.Working, S(m, 8), "puis Working grace au sous-agent");
             T.Eq(PetState.Working, S(m, 600), "meme 10 min plus tard, tant que l'agent vit");
@@ -253,12 +278,57 @@ static class ModelTests
             T.Eq(1, m.Snapshot(At(5)).Minis.Count, "toujours la");
         });
 
-        T.Case("sous-agent : muet depuis 30 min => disparait", () =>
+        T.Case("sous-agent avec un outil en suspens : muet depuis 30 min => disparait", () =>
         {
-            var m = M(E(K.SubagentActivity, 0, agent: "lent", detail: "x"));
+            var m = M(E(K.SubagentActivity, 0, agent: "lent", detail: "x"), E(K.ToolStarted, 0, agent: "lent", tool: "Bash", detail: "long"));
             T.Eq(1, m.Snapshot(At(1799)).Minis.Count, "encore la");
             T.Eq(0, m.Snapshot(At(1801)).Minis.Count, "disparu");
             T.Eq(PetState.Idle, S(m, 1801), "et la session avec");
+        });
+
+        T.Case("sous-agent sans outil en suspens : muet depuis 3 min => inactif (Claude Code ferme)", () =>
+        {
+            var m = M(E(K.PromptSubmitted, 0),
+                E(K.SubagentActivity, 1, agent: "mort", detail: "x"), E(K.ToolStarted, 1, agent: "mort", tool: "Read", detail: "r"),
+                E(K.ToolFinished, 2, agent: "mort", detail: "r"),
+                E(K.SubagentActivity, 2, agent: "outil", detail: "y"), E(K.ToolStarted, 2, agent: "outil", tool: "Bash", detail: "b"));
+            T.Eq("mort,outil", string.Join(",", m.Snapshot(At(180)).Minis.Select(x => x.Id).OrderBy(x => x)), "les deux dans les 3 min");
+            T.Eq("outil", string.Join(",", m.Snapshot(At(183)).Minis.Select(x => x.Id)), "reste celui qui attend son outil");
+            T.Eq(PetState.Working, S(m, 183), "la session travaille grace a lui");
+            m.Apply(E(K.SubagentActivity, 200, agent: "mort", detail: "x"));
+            T.Eq(2, m.Snapshot(At(201)).Minis.Count, "il reparle : il revient");
+        });
+
+        T.Case("sous-agent au premier plan : fini quand le fil principal recoit le tool_result de son toolUseId", () =>
+        {
+            ActivityEvent Fg(K kind, double at, string agent, string toolUseId, string? tool = null, string? detail = null) =>
+                E(kind, at, agent: agent, tool: tool, detail: detail) with { ForegroundToolUseId = toolUseId };
+            var m = M(E(K.PromptSubmitted, 0), E(K.ToolStarted, 1, tool: "Agent", detail: "toolu_ag"),
+                Fg(K.SubagentActivity, 2, "fg", "toolu_ag", detail: "premier plan"),
+                Fg(K.ToolStarted, 3, "fg", "toolu_ag", tool: "Bash", detail: "fb"), Fg(K.ToolFinished, 4, "fg", "toolu_ag", detail: "fb"),
+                // derniere ligne de l'agent sur un stop_reason null : aucune fin dans son transcript
+                Fg(K.SubagentActivity, 5, "fg", "toolu_ag", detail: "premier plan"));
+            T.Eq(1, m.Snapshot(At(6)).Minis.Count, "actif");
+            m.Apply(E(K.ToolFinished, 6, detail: "autre"));
+            T.Eq(1, m.Snapshot(At(6.5)).Minis.Count, "un autre resultat ne le termine pas");
+            m.Apply(E(K.ToolFinished, 7, detail: "toolu_ag"));
+            T.Eq(0, m.Snapshot(At(7.5)).Minis.Count, "fini par le resultat de l'outil Agent");
+            m.Apply(Fg(K.SubagentActivity, 5.5, "fg", "toolu_ag", detail: "premier plan"));
+            T.Eq(0, m.Snapshot(At(8)).Minis.Count, "une ligne anterieure lue apres ne le ressuscite pas");
+        });
+
+        T.Case("SubagentEnded (ou TurnEnded) d'un agent inconnu d'une session connue : cree fini", () =>
+        {
+            // amorcage : la task-notification du parent est appliquee avant les lignes de l'agent
+            foreach (var end in new[] { K.SubagentEnded, K.TurnEnded })
+            {
+                var m = M(E(K.PromptSubmitted, 0), E(end, 10, agent: "bg", detail: "completed"),
+                    E(K.SubagentActivity, 5, agent: "bg", detail: "fond"), E(K.ToolStarted, 6, agent: "bg", tool: "Bash", detail: "b"));
+                T.Eq(0, m.Snapshot(At(11)).Minis.Count, end + " : pas de mini fantome");
+                T.Eq(PetState.Idle, S(m, 200), end + " : la session s'arrete a son WorkingTimeout, pas 30 min plus tard");
+                m.Apply(E(K.SubagentActivity, 20, agent: "bg", detail: "fond"));
+                T.Eq(1, m.Snapshot(At(21)).Minis.Count, end + " : relance posterieure : revient");
+            }
         });
 
         T.Case("sous-agent : une ligne anterieure a sa fin, lue apres, ne le ressuscite pas", () =>
@@ -328,6 +398,78 @@ static class ModelTests
             T.Eq(A, m.Snapshot(At(170)).MainSessionId, "A encore active");
             // A muette depuis plus de 3 min : B et C encore actives, C la plus recente
             T.Eq("session-c", m.Snapshot(At(200)).MainSessionId, "C");
+        });
+
+        T.Case("principale en attente perimee (session tuee) : cede la place a la session active, sans clignotement", () =>
+        {
+            var m = M(E(K.PromptSubmitted, 0), E(K.PromptSubmitted, 1, session: B), E(K.ToolStarted, 2, session: B, tool: "Bash", detail: "b"),
+                E(K.NeedsUser, 3, session: B, detail: "permission_prompt"));
+            T.Eq(B, m.Snapshot(At(3.5)).MainSessionId, "attente fraiche : B passe devant");
+            var mains = new List<string?>();
+            for (int t = 4; t <= 400; t++)
+            {
+                // A continue de travailler, B ne dira plus rien
+                if (t % 10 == 0) m.Apply(E(K.ToolStarted, t, tool: "Read", detail: "r" + t));
+                mains.Add(m.Snapshot(At(t)).MainSessionId);
+            }
+            T.Eq(B, mains[120 - 4], "B garde la place pendant FreshWaitWindow (2 min)");
+            T.Eq(A, mains[130 - 4], "puis A, active depuis le debut de l'attente de B");
+            int changes = mains.Zip(mains.Skip(1)).Count(p => p.First != p.Second);
+            T.Eq(1, changes, "un seul changement de principale sur 400 s");
+            var mini = m.Snapshot(At(400)).Minis.Single();
+            T.Eq(B, mini.Id, "B reste en mini");
+            T.Eq(PetState.WaitingUser, mini.State, "toujours en attente");
+        });
+
+        T.Case("attente perimee a l'amorcage : ne vole pas la place de la session active", () =>
+        {
+            // lot d'amorcage applique d'un coup, premier instantane apres : aucune principale connue
+            var m = new ActivityModel();
+            foreach (var e in new[] { E(K.PromptSubmitted, -5, session: B), E(K.AskedUser, 0, session: B, tool: "AskUserQuestion", detail: "q"),
+                E(K.PromptSubmitted, 100), E(K.ToolStarted, 150, tool: "Bash", detail: "b") })
+                m.Apply(e);
+            var s = m.Snapshot(At(200));
+            T.Eq(A, s.MainSessionId, "A, active apres le debut de l'attente de B");
+            T.Eq(PetState.WaitingUser, s.Minis.Single(x => x.Id == B).State, "B en mini, au telephone");
+        });
+
+        T.Case("attente posterieure a la derniere activite de la principale : prend la place meme apres 2 min", () =>
+        {
+            var m = new ActivityModel();
+            m.Apply(E(K.PromptSubmitted, 0));
+            m.Apply(E(K.ToolStarted, 1, tool: "Bash", detail: "long"));
+            T.Eq(A, m.Snapshot(At(1)).MainSessionId, "A d'abord");
+            m.Apply(E(K.PromptSubmitted, 2, session: B));
+            m.Apply(E(K.AskedUser, 5, session: B, tool: "AskUserQuestion", detail: "q"));
+            T.Eq(B, m.Snapshot(At(150)).MainSessionId, "A muette depuis le debut de l'attente de B : B");
+
+            var n = new ActivityModel();
+            n.Apply(E(K.PromptSubmitted, 0));
+            n.Apply(E(K.ToolStarted, 1, tool: "Bash", detail: "long"));
+            T.Eq(A, n.Snapshot(At(1)).MainSessionId, "A d'abord");
+            n.Apply(E(K.PromptSubmitted, 2, session: B));
+            n.Apply(E(K.AskedUser, 5, session: B, tool: "AskUserQuestion", detail: "q"));
+            n.Apply(E(K.ToolFinished, 100, detail: "long"));
+            T.Eq(A, n.Snapshot(At(150)).MainSessionId, "A active apres le debut de l'attente, attente de B perimee : A reste");
+        });
+
+        T.Case("deux attentes qui vieillissent : un seul passage, jamais de va-et-vient", () =>
+        {
+            // chacune a un sous-agent de fond qui ecrit : sa derniere activite depasse l'attente de
+            // l'autre. A perimee a 122 s cede a l'attente encore fraiche de B, puis plus rien ne bouge
+            var m = M(E(K.PromptSubmitted, 0), E(K.AskedUser, 1, tool: "AskUserQuestion", detail: "qa"),
+                E(K.PromptSubmitted, 2, session: B), E(K.AskedUser, 3, session: B, tool: "AskUserQuestion", detail: "qb"));
+            var mains = new List<string?>();
+            for (int t = 4; t <= 400; t++)
+            {
+                if (t % 7 == 0) m.Apply(E(K.SubagentActivity, t, agent: "fa", detail: "fond a"));
+                if (t % 11 == 0) m.Apply(E(K.SubagentActivity, t, session: B, agent: "fb", detail: "fond b"));
+                mains.Add(m.Snapshot(At(t)).MainSessionId);
+            }
+            T.Eq(A, mains[121 - 4], "A tant que son attente est fraiche");
+            T.Eq(B, mains[122 - 4], "puis l'attente plus fraiche de B");
+            int changes = mains.Zip(mains.Skip(1)).Count(p => p.First != p.Second);
+            T.Eq(1, changes, "un seul changement sur 400 s");
         });
 
         T.Case("minis : plafond de 6, les plus recents d'abord, le reste en debordement", () =>

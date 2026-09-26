@@ -35,18 +35,55 @@ public sealed record ActivityEvent(
     string? Cwd,
     string? ToolName,
     bool IsError,
-    string? Detail);
+    string? Detail)
+{
+    /// <summary>
+    /// Sous-agent au premier plan seulement (TranscriptSource.ForegroundToolUseId) : id du
+    /// tool_use Agent du fil principal qui l'attend. Son tool_result sur le fil principal
+    /// termine l'agent.
+    /// </summary>
+    public string? ForegroundToolUseId { get; init; }
+}
 
 /// <summary>D'ou vient une ligne de transcript : session, et sous-agent le cas echeant.</summary>
-public sealed record TranscriptSource(string SessionId, string? AgentId, string? AgentDescription);
+public sealed record TranscriptSource(string SessionId, string? AgentId, string? AgentDescription)
+{
+    /// <summary>
+    /// toolUseId du meta.json, pour un sous-agent au premier plan : requestShape present et
+    /// different de "background". Null sinon, et null si requestShape est absent : sur les
+    /// transcripts mesures, ces agents-la recoivent presque tous leur tool_result des le
+    /// lancement, comme ceux de fond.
+    /// </summary>
+    public string? ForegroundToolUseId { get; init; }
+}
 
 public sealed class ActivityOptions
 {
-    /// <summary>Session Working sans le moindre evenement depuis ce delai : consideree inactive.</summary>
+    /// <summary>
+    /// Session Working sans le moindre evenement depuis ce delai : consideree inactive. Vaut
+    /// aussi pour un sous-agent muet qui n'a aucun outil en suspens.
+    /// </summary>
     public TimeSpan WorkingTimeout { get; set; } = TimeSpan.FromMinutes(3);
-    /// <summary>Attente de l'utilisateur au-dela de ce delai : abandonnee.</summary>
+    /// <summary>
+    /// Question ou plan a valider (AskedUser) au-dela de ce delai : attente abandonnee. La
+    /// question est dans le transcript, la reponse aussi : le delai peut etre long.
+    /// </summary>
     public TimeSpan WaitingTimeout { get; set; } = TimeSpan.FromHours(1);
-    /// <summary>Sous-agent muet depuis ce delai : il disparait.</summary>
+    /// <summary>
+    /// Demande du hook (NeedsUser) au-dela de ce delai : attente abandonnee. Rien n'est ecrit
+    /// entre une autorisation accordee et le tool_result, ni quand la session est tuee
+    /// pendant l'attente : le delai est court.
+    /// </summary>
+    public TimeSpan NeedsUserTimeout { get; set; } = TimeSpan.FromMinutes(10);
+    /// <summary>
+    /// Une session en attente ne prend la place principale que si son attente a moins de ce
+    /// delai, ou si elle a commence apres la derniere activite de la principale.
+    /// </summary>
+    public TimeSpan FreshWaitWindow { get; set; } = TimeSpan.FromMinutes(2);
+    /// <summary>
+    /// Sous-agent muet depuis ce delai alors qu'un de ses outils est en suspens : il disparait.
+    /// Sans outil en suspens, WorkingTimeout suffit (Claude Code ferme en plein travail).
+    /// </summary>
     public TimeSpan SubagentTimeout { get; set; } = TimeSpan.FromMinutes(30);
     /// <summary>Session oubliee ce delai apres son dernier evenement.</summary>
     public TimeSpan ForgetAfter { get; set; } = TimeSpan.FromHours(2);

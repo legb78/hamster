@@ -12,10 +12,16 @@ namespace Hamster.Activity;
 /// </summary>
 public sealed class HookEventsWatcher : IDisposable
 {
-    /// <summary>Types de notification qui veulent dire "l'utilisateur doit agir". idle_prompt n'en est pas.</summary>
+    /// <summary>
+    /// Types de notification qui veulent dire "l'utilisateur doit agir". idle_prompt n'en est pas.
+    /// worker_permission_prompt : absent de la doc des hooks, sa source est le binaire de
+    /// Claude Code 2.1.283 (liste des types de notification, et InboxPoller du mode equipe :
+    /// "... needs permission for ...", "... needs network access to ..."). Traite comme
+    /// permission_prompt ; Detail garde le type recu.
+    /// </summary>
     internal static readonly HashSet<string> NeedsUserTypes = new(StringComparer.Ordinal)
     {
-        "permission_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog",
+        "permission_prompt", "worker_permission_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog",
     };
 
     // reglables par les tests
@@ -42,7 +48,7 @@ public sealed class HookEventsWatcher : IDisposable
     volatile bool _watcherBroken;
     DateTime _tailSinceUtc, _rotatedUtc;
     volatile string _status = "arrete";
-    long _values, _events, _garbage;
+    long _values, _events, _garbage, _ignored;
 
     public HookEventsWatcher(string eventsPath)
     {
@@ -62,6 +68,14 @@ public sealed class HookEventsWatcher : IDisposable
     }
 
     public event Action<IReadOnlyList<ActivityEvent>>? Events;
+
+    /// <summary>
+    /// Optionnel, a fixer avant Start : vrai si un transcript a deja donne un evenement pour
+    /// cette session (ActivityModel.KnowsSession). Une demande pour une autre session est
+    /// ignoree et comptee dans Status : rien dans les transcripts ne leverait son attente.
+    /// Appele sur le thread de fond du watcher. Null : tout passe, le modele filtre lui-meme.
+    /// </summary>
+    public Func<string, bool>? KnownSession { get; set; }
 
     public string Status => _status;
 
@@ -225,7 +239,11 @@ public sealed class HookEventsWatcher : IDisposable
                 using (doc)
                 {
                     _values++;
-                    if (ToEvent(doc.RootElement, Clock()) is { } e) batch.Add(e);
+                    if (ToEvent(doc.RootElement, Clock()) is { } e)
+                    {
+                        if (KnownSession is { } known && !Known(known, e.SessionId)) _ignored++;
+                        else batch.Add(e);
+                    }
                 }
             }
             catch (JsonException)
@@ -261,6 +279,13 @@ public sealed class HookEventsWatcher : IDisposable
 
     static string? Str(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>Le filtre vient de l'appelant : s'il leve, la demande passe, le modele tranchera.</summary>
+    static bool Known(Func<string, bool> known, string session)
+    {
+        try { return known(session); }
+        catch (Exception) { return true; }
+    }
 
     void EnsureWatcher()
     {
@@ -314,6 +339,6 @@ public sealed class HookEventsWatcher : IDisposable
             _status = "inactif : " + _path + " absent";
             return;
         }
-        _status = $"actif : {_values} notifications lues, {_events} demandes, {_garbage} illisibles";
+        _status = $"actif : {_values} notifications lues, {_events} demandes, {_garbage} illisibles, {_ignored} ignorees";
     }
 }
