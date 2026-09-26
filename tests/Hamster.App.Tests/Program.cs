@@ -18,6 +18,7 @@ static class Program
         AnimatorTests.Run();
         CrowdTests.Run();
         RenderTests.Run();
+        LabelTests.Run();
         AppTests.Run();
 
         Console.WriteLine();

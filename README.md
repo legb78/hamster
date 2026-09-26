@@ -21,7 +21,7 @@ Tests, sans fenêtre (applications console, code de sortie 1 au moindre échec) 
 
 ```powershell
 dotnet run --project tests\Hamster.Activity.Tests -c Release   # parseur, watchers, modèle, relecture des vrais transcripts
-dotnet run --project tests\Hamster.App.Tests -c Release        # directeur, minis, rendu, réglages, clé Run (valeur HamsterTest)
+dotnet run --project tests\Hamster.App.Tests -c Release        # directeur, minis, rendu, étiquettes, sonnerie, réglages, clé Run (valeurs HamsterTest)
 ```
 
 Le hamster est visible dès le lancement. Une seule instance par session : `run.ps1` arrête
@@ -35,7 +35,7 @@ Pour quitter : menu → Quitter.
 | Claude Code | Le hamster |
 |---|---|
 | travaille | une scène de travail choisie d'après l'outil en cours — `Bash`/`PowerShell` : terminal ; `Read`/`Grep`/`Glob`/`WebFetch`/`WebSearch` : gros livre et loupe ; `Edit`/`Write`/`NotebookEdit` : laptop ; `Agent`/`Workflow` : chef d'orchestre. Puis une autre toutes les 8 à 18 s, tirée au hasard selon des poids (laptop 25, livre 20, terminal 20, labo 15, chef d'orchestre 15, réflexion 5). Il ne se balade pas. |
-| attend ta réponse (question, plan à valider, autorisation) | il répond au téléphone, avec **le nom du projet** au-dessus de la tête : c'est la conversation qui a besoin de toi |
+| attend ta réponse (question, plan à valider, autorisation) | il répond au téléphone, avec **le nom du projet** au-dessus de la tête : c'est la conversation qui a besoin de toi. Une autre conversation qui attend en même temps a son mini au téléphone, avec lui aussi le nom de son projet en permanence |
 | a fini une tâche | saut et feux d'artifice (3 s) |
 | erreur d'outil ou d'API | tête catastrophée (2 s), puis il se remet au travail |
 | rien | balade, puis après le délai de chill (10 s par défaut) : console, grignotage, sieste, étirements, skate, entrecoupés de poses et de petites balades |
@@ -56,11 +56,27 @@ corps d'un mini (bulle du téléphone, feux d'artifice) : rien ne se peint sur l
 état pour une session, description pour un sous-agent. Clic sur un mini : il réagit. Clic et
 glisser sur le principal : comme avant (réaction, déplacement).
 
-**Sons**, désactivés par défaut (menu → **Son**) : téléphone (`Windows Ringin.wav`) à l'arrivée
-d'une attente, `tada.wav` en fin de tâche, `Windows Navigation Start.wav` à l'apparition d'un
-sous-agent, au plus un toutes les 10 s. Jamais en boucle. Coupés quand Windows refuse les
+**Étiquettes.** Celle d'une conversation en attente reste affichée tant qu'elle attend, au-dessus
+du principal ou de son mini, avec un cadre jaune ; survolée, celle d'un mini garde son texte
+(plus longue, elle pourrait changer de place et fuir le curseur). Près du bord de l'écran, une
+étiquette glisse vers l'intérieur plutôt que d'être coupée : ses bords restent dans la zone de
+travail de l'écran du hamster. Une étiquette de mini tourne avec lui, mais ne se pose jamais sur le visage du
+principal ni sur une autre étiquette (elle monte alors au-dessus). Sur l'arc avant, elle passe
+à côté du visage, du côté du mini ; si la place manque de ce côté (principal poussé contre le
+bord de l'écran, nom long), elle se pose sous le visage, sur le mini lui-même, quitte à cacher
+une partie de celui-ci : de l'autre côté du principal, elle semblerait appartenir à un autre
+mini. Vérifié tout le tour de l'orbite, sur tous les clips du principal, miroir compris, aux
+trois échelles, au bord de l'écran et au milieu, par `Hamster.App.Tests`.
+
+**Sons**, désactivés par défaut (menu → **Son**) : téléphone (`Windows Ringin.wav`) quand une
+conversation de plus se met à attendre ta réponse, la principale ou celle d'un mini ; une
+attente déjà annoncée ne resonne pas quand son mini prend la place principale. `tada.wav` en
+fin de tâche, `Windows Navigation Start.wav` à l'apparition d'un sous-agent, au plus un toutes
+les 10 s. Jamais en boucle, rien pendant les 3 s d'amorçage (les transcripts relus ne sont pas
+des nouveautés) ni tant que le hamster est en pause ou caché. Coupés quand Windows refuse les
 notifications (`SHQueryUserNotificationState` ≠ `QUNS_ACCEPTS_NOTIFICATIONS` : application
-plein écran, mode présentation, session verrouillée…).
+plein écran, mode présentation, session verrouillée…). Chaque nouvelle attente est journalisée
+(`nouvelle attente: ...`), son coché ou non.
 
 **Overlay de debug** (menu) : clip, état, outil, nombre de minis, état des deux sources.
 Chaque changement d'état est journalisé sur stderr.
@@ -95,15 +111,37 @@ Variables d'environnement, pour les tests surtout :
 
 ```powershell
 .\Scripts\install.ps1     # publie dans %LOCALAPPDATA%\Programs\Hamster et le lance
-.\Scripts\uninstall.ps1   # défait tout, garde les réglages
+.\Scripts\uninstall.ps1   # voir ci-dessous : garde les réglages, ne touche pas à Claude Code
 ```
+
+`uninstall.ps1` retire la valeur de démarrage (et sa marque `StartupApproved`), arrête le
+hamster, supprime le dossier installé, puis `~/.hamster` : `hook.sh`, `events.jsonl` et
+`events.jsonl.1` (le dossier reste s'il contient d'autres fichiers, qu'il nomme). Il garde
+`%APPDATA%\Hamster\settings.json`. Il **ne défait pas tout** : il ne lit ni ne modifie jamais les
+réglages de Claude Code. Si tu as ajouté le bloc `Notification` du hook (voir plus bas) à
+`~/.claude/settings.json`, retire-le **à la main** ; le script le rappelle en finissant. Tant
+qu'il reste, Claude Code lance à chaque notification un hook dont le script n'existe plus, et
+affiche une erreur de hook non bloquante (d'après la
+[doc des hooks](https://code.claude.com/docs/en/hooks) : code de sortie 127, « the action
+proceeds »).
 
 Menu → **Lancer au demarrage** : la case écrit ou retire la valeur
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Hamster` (le chemin de l'exe en cours, entre
-guillemets), aucun droit administrateur. Seul ce clic la modifie, jamais le lancement. Cocher
-la case retire aussi la marque qu'une désactivation dans le Gestionnaire des tâches laisse sous
-`...\Explorer\StartupApproved\Run`, comme le faisait `install.ps1`. `install.ps1` ne crée plus
-la valeur Run : si elle existe déjà, il la fait pointer sur l'exe installé.
+guillemets), aucun droit administrateur. Seul ce clic la modifie, jamais le lancement.
+
+La case suit aussi le Gestionnaire des tâches. Il garde, sous
+`HKCU\...\Explorer\StartupApproved\Run`, une valeur binaire du même nom, **non documentée** :
+sur le poste de développement (lecture seule des 21 valeurs présentes), 12 octets dont le
+premier vaut `0x02` pour une entrée active (7 valeurs, le reste à zéro) et `0x03` pour une
+entrée désactivée (14 valeurs ; pour 13 d'entre elles, les 8 derniers octets se lisent comme une
+date FILETIME de 2025–2026, sans doute celle de la désactivation). Aucun autre premier octet n'y
+a été vu. Une entrée marquée `0x03` est désactivée : la case est donc **décochée**, et la cocher
+réactive le démarrage (écrit la valeur Run et retire la marque) au lieu de le retirer. Tout
+autre premier octet, ou une marque absente, compte comme actif : on ne devine pas le sens d'une
+valeur jamais vue.
+
+`install.ps1` ne crée plus la valeur Run : si elle existe déjà, il la fait pointer sur l'exe
+installé.
 
 ## Avec Claude Desktop
 
@@ -154,7 +192,7 @@ recourir au kill, et seulement dans la session Windows courante.
     "hooks": {
       "Notification": [
         {
-          "matcher": "permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog",
+          "matcher": "permission_prompt|worker_permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog",
           "hooks": [
             { "type": "command", "command": "sh \"$HOME/.hamster/hook.sh\"", "async": true, "timeout": 5 }
           ]
@@ -170,13 +208,40 @@ recourir au kill, et seulement dans la session Windows courante.
   sauf les demandes d'autorisation : le téléphone ne sonne alors que pour les questions et les
   plans à valider, qui, eux, sont dans les transcripts.
 
+  `worker_permission_prompt` est traité comme `permission_prompt`. Ce type ne figure pas dans
+  la doc des hooks : il vient du binaire de Claude Code 2.1.283. Il doit figurer dans le
+  `matcher` : un matcher fait seulement de lettres, chiffres, `_`, `-` et `|` est une liste de
+  noms **exacts** (doc des hooks), et `permission_prompt` n'y attrape donc pas
+  `worker_permission_prompt`. Un bloc déjà fusionné avec l'ancien matcher est à compléter à la
+  main.
+
 Le format des transcripts est interne et non documenté : le parsing est tolérant (une ligne non
 reconnue ne produit rien) et le test de relecture de `Hamster.Activity.Tests` sert de détecteur
 si une mise à jour de Claude Code le change.
 
+### Attentes, conversation principale et sous-agents
+
+- **Durée d'une attente.** Une attente née d'une demande d'autorisation (hook) expire après
+  10 min. Une question `AskUserQuestion`, lue dans le transcript, reste 1 h (le parseur range le
+  plan à valider, `ExitPlanMode`, avec elle).
+- **Place principale.** Une attente ne prend la place de la conversation principale que si elle a
+  moins de 2 min, ou si elle est postérieure à la dernière activité de la principale. Une attente
+  périmée rend la place à une conversation active ; elle reste visible en mini, au téléphone,
+  avec son étiquette.
+- **Conversation inconnue.** Une notification pour une conversation dont aucun transcript n'a
+  encore rien dit est ignorée.
+- **Sous-agents.** Un sous-agent sans outil en cours et muet depuis 3 min disparaît (Claude Code
+  fermé en plein travail, par exemple) ; avec un outil en cours, il tient 30 min. Un sous-agent au
+  premier plan se termine quand son résultat arrive au fil principal.
+- **Limite connue : le téléphone après une autorisation accordée.** Claude Code n'écrit rien
+  quand tu accordes l'autorisation : la première ligne qui lève l'attente est le résultat de
+  l'outil, écrit quand la commande a fini. Pendant l'exécution de la commande autorisée, le
+  hamster peut donc rester au téléphone, **10 min au plus** (l'expiration ci-dessus), faute de
+  signal de réponse.
+
 Garde-fous : une session qui travaille sans rien écrire pendant 3 min est considérée inactive
-(un outil unique plus long fait donc passer le hamster au repos jusqu'à son résultat), une
-attente est abandonnée après 1 h, un sous-agent muet disparaît après 30 min.
+(un outil unique plus long fait donc passer le hamster au repos jusqu'à son résultat) ; pour
+les attentes et les sous-agents, voir juste au-dessus (10 min, 1 h, 3 min, 30 min).
 
 ## Coût mesuré
 
@@ -202,8 +267,8 @@ src/Hamster.App/
   App/                 entrée, cycle de vie, réglages, menu, ActivityHub, sons, clé Run,
                        détection de Claude Desktop, diagnostics
   Window/              fenêtre layered, surface DIB, contrôleur, bureaux virtuels, P/Invoke
-  Render/              frames indexées, animateur, composition, orbite, police 3x5
-  State/               balade, directeur (état -> clip), foule des minis
+  Render/              frames indexées, animateur, composition, orbite, police 3x5, étiquettes
+  State/               balade, directeur (état -> clip), foule des minis, sonnerie des attentes
 tests/                 Hamster.Activity.Tests, Hamster.App.Tests
 Hooks/                 hook.sh, settings-snippet.json (jamais appliqué automatiquement)
 Assets/                palette.gpl, sprites/hamster/, preview/

@@ -21,6 +21,8 @@ internal sealed class RenderClip
     FaceBox?[]? _faces;
     bool[]? _facesDone;
     int? _topRow;
+    (int X0, int Y0, int X1, int Y1)? _faceBounds;
+    bool _faceBoundsDone;
 
     public int FrameCount => Frames.Length;
 
@@ -39,6 +41,29 @@ internal sealed class RenderClip
 
     /// <summary>Ligne la plus haute atteinte par le clip, toutes frames confondues : l'etiquette se pose au-dessus.</summary>
     public int TopRow => _topRow ??= Frames.Min(f => Compositor.TopRow(f, PixelCanvas.Size));
+
+    /// <summary>
+    /// Rectangle qui couvre le visage de toutes les frames du clip, en pixels de frame, bornes
+    /// comprises ; null sans visage (FX). Les etiquettes des minis l'evitent : sur toutes les
+    /// frames plutot que sur la frame courante, pour qu'elles ne sautent pas a chaque image.
+    /// </summary>
+    public (int X0, int Y0, int X1, int Y1)? FaceBounds
+    {
+        get
+        {
+            if (_faceBoundsDone) return _faceBounds;
+            int x0 = int.MaxValue, y0 = int.MaxValue, x1 = int.MinValue, y1 = int.MinValue;
+            for (int i = 0; i < Frames.Length; i++)
+            {
+                if (Face(i) is not { } b) continue;
+                x0 = Math.Min(x0, b.X0); y0 = Math.Min(y0, b.Y0);
+                x1 = Math.Max(x1, b.X1); y1 = Math.Max(y1, b.Y1);
+            }
+            _faceBounds = x1 < x0 ? null : (x0, y0, x1, y1);
+            _faceBoundsDone = true;
+            return _faceBounds;
+        }
+    }
 
     /// <summary>La frame reduite de moitie pour les minis, calculee a la premiere demande puis gardee.</summary>
     public byte[] Mini(int index)

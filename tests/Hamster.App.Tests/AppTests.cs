@@ -69,6 +69,50 @@ static class AppTests
             T.Eq(realBefore, RunValue("Hamster"), "vraie entree Hamster intacte");
         });
 
+        T.Case("lancer au demarrage : desactive dans le Gestionnaire des taches = decoche, le clic reactive", () =>
+        {
+            string? realBefore = RunValue("Hamster");
+            byte[]? realApprovedBefore = ApprovedValue("Hamster");
+            const string exe = @"C:\Program Files\Test Hamster\Hamster.exe";
+            var reg = new StartupRegistration(TestValue, exe);
+            bool createdKey = false;
+            try
+            {
+                reg.Enable();
+                T.True(reg.IsEnabled, "active");
+
+                // la marque que laisse le Gestionnaire des taches, telle qu'on la lit sur ce poste :
+                // 0x03, trois octets nuls, puis huit octets qui se lisent comme une date FILETIME
+                var disabled = new byte[12];
+                disabled[0] = StartupRegistration.ApprovedDisabled;
+                BitConverter.GetBytes(DateTime.UtcNow.ToFileTimeUtc()).CopyTo(disabled, 4);
+                createdKey = WriteApproved(TestValue, disabled);
+                T.True(reg.DisabledByTaskManager, "marque lue");
+                T.True(reg.CurrentValue != null, "la valeur Run est toujours la");
+                T.True(!reg.IsEnabled, "decoche : Explorer ne le lancera pas");
+
+                T.Eq(true, reg.Toggle(), "clic : reactive, ne retire pas");
+                T.Eq("\"" + exe + "\"", RunValue(TestValue), "valeur Run");
+                T.Eq(null, ApprovedValue(TestValue), "marque levee");
+                T.True(reg.IsEnabled, "coche");
+
+                // 0x02 : l'etat d'une entree active dans le Gestionnaire des taches
+                WriteApproved(TestValue, new byte[] { 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+                T.True(!reg.DisabledByTaskManager && reg.IsEnabled, "0x02 : active");
+                T.Eq(false, reg.Toggle(), "clic suivant : retire");
+                T.Eq(null, RunValue(TestValue), "valeur Run retiree");
+            }
+            finally
+            {
+                reg.Disable();
+                DeleteApproved(TestValue, createdKey);
+            }
+            T.Eq(null, RunValue(TestValue), "rien ne reste dans Run");
+            T.Eq(null, ApprovedValue(TestValue), "rien ne reste dans StartupApproved");
+            T.Eq(realBefore, RunValue("Hamster"), "vraie entree Hamster intacte");
+            T.True(Same(realApprovedBefore, ApprovedValue("Hamster")), "vraie marque Hamster intacte");
+        });
+
         T.Case("lancer au demarrage : nom de valeur par variable d'environnement", () =>
         {
             string? before = Environment.GetEnvironmentVariable("HAMSTER_RUN_VALUE");
@@ -88,6 +132,34 @@ static class AppTests
         using var key = Registry.CurrentUser.OpenSubKey(StartupRegistration.RunKeyPath);
         return key?.GetValue(name) as string;
     }
+
+    static byte[]? ApprovedValue(string name)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(StartupRegistration.ApprovedKeyPath);
+        return key?.GetValue(name) as byte[];
+    }
+
+    /// <summary>Ecrit la marque ; vrai si la cle StartupApproved\Run n'existait pas et a du etre creee.</summary>
+    static bool WriteApproved(string name, byte[] value)
+    {
+        bool existed;
+        using (var probe = Registry.CurrentUser.OpenSubKey(StartupRegistration.ApprovedKeyPath)) existed = probe != null;
+        using var key = Registry.CurrentUser.CreateSubKey(StartupRegistration.ApprovedKeyPath);
+        key.SetValue(name, value, RegistryValueKind.Binary);
+        return !existed;
+    }
+
+    static void DeleteApproved(string name, bool deleteKeyIfEmpty)
+    {
+        using (var key = Registry.CurrentUser.OpenSubKey(StartupRegistration.ApprovedKeyPath, writable: true))
+        {
+            key?.DeleteValue(name, throwOnMissingValue: false);
+            if (key == null || !deleteKeyIfEmpty || key.ValueCount > 0 || key.SubKeyCount > 0) return;
+        }
+        Registry.CurrentUser.DeleteSubKey(StartupRegistration.ApprovedKeyPath, throwOnMissingSubKey: false);
+    }
+
+    static bool Same(byte[]? a, byte[]? b) => a == null ? b == null : b != null && a.AsSpan().SequenceEqual(b);
 
     static RegistryValueKind? RunKind(string name)
     {
