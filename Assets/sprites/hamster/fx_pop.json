@@ -4,5 +4,6 @@
   "loop": false,
   "frameSize": [128, 128],
   "pivot": [64, 121],
-  "leavesBaseline": true
+  "leavesBaseline": true,
+  "mirrorable": true
 }

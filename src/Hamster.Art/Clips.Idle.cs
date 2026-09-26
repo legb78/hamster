@@ -167,6 +167,6 @@ public static partial class Clips
                 })
                 .Build();
         }
-        return new Clip(IdleSleep, frames, 5, true, false);
+        return new Clip(IdleSleep, frames, 5, true, false) { Mirrorable = false };
     }
 }

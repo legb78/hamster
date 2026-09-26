@@ -154,7 +154,7 @@ public static partial class Clips
                 .Shadow(106, 18)
                 .Build();
         }
-        return new Clip(WorkLab, frames, 6, true, false);
+        return new Clip(WorkLab, frames, 6, true, false) { Mirrorable = false };
     }
 
     /// <summary>

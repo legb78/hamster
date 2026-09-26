@@ -90,7 +90,8 @@ internal static class Program
         sb.Append($"  \"loop\": {(clip.Loop ? "true" : "false")},\n");
         sb.Append($"  \"frameSize\": [{PixelCanvas.Size}, {PixelCanvas.Size}],\n");
         sb.Append($"  \"pivot\": [{PixelCanvas.Size / 2}, {PixelCanvas.Baseline}],\n");
-        sb.Append($"  \"leavesBaseline\": {(clip.LeavesBaseline ? "true" : "false")}\n");
+        sb.Append($"  \"leavesBaseline\": {(clip.LeavesBaseline ? "true" : "false")},\n");
+        sb.Append($"  \"mirrorable\": {(clip.Mirrorable ? "true" : "false")}\n");
         sb.Append("}\n");
         File.WriteAllText(path, sb.ToString());
     }

@@ -13,6 +13,12 @@ public sealed record Clip(
 {
     public int FrameCount => Frames.Length;
     public double DurationSeconds => Frames.Length / (double)Fps;
+
+    /// <summary>
+    /// False quand le clip porte du texte (?, Z, formule) : en miroir il se lirait a
+    /// l'envers. L'app garde alors le personnage tourne vers la droite.
+    /// </summary>
+    public bool Mirrorable { get; init; } = true;
 }
 
 /// <summary>Bibliotheque procedurale. Les PNG de la phase 3 remplaceront ces frames sans toucher au code appelant.</summary>

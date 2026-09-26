@@ -32,7 +32,7 @@ public static partial class Clips
                 .Shadow(115, 12)
                 .Build();
         }
-        return new Clip(Phone, frames, 6, true, false);
+        return new Clip(Phone, frames, 6, true, false) { Mirrorable = false };
     }
 
     /// <summary>Dessine sur une couche temporaire puis la recopie decalee : pour faire suivre un objet au corps.</summary>
