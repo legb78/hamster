@@ -6,15 +6,27 @@ using Hamster.Art;
 namespace Hamster.SpriteGen;
 
 /// <summary>
-/// Rend toutes les sheets, la palette .gpl et un contact sheet de relecture.
-/// Tout est procedural : chaque sheet pourra etre remplacee plus tard par une
-/// version generee par modele d'image sans toucher au code de l'app.
+/// Rend toutes les sheets, la palette .gpl et les planches de relecture, puis controle
+/// les regles de dessin. Tout est procedural : chaque sheet pourra etre remplacee plus
+/// tard par une version generee par modele d'image sans toucher au code de l'app.
+///
+/// Usage : SpriteGen [racine] [--review dossier]
+/// Code de sortie 1 si un controle echoue ; les fichiers sont ecrits quand meme, pour
+/// qu'on puisse regarder ce qui cloche.
 /// </summary>
 internal static class Program
 {
     static int Main(string[] args)
     {
-        string root = args.Length > 0 ? args[0] : FindRepoRoot();
+        string? review = null;
+        var rest = new List<string>();
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--review" && i + 1 < args.Length) review = args[++i];
+            else rest.Add(args[i]);
+        }
+
+        string root = rest.Count > 0 ? rest[0] : FindRepoRoot();
         string assets = Path.Combine(root, "Assets");
         string sprites = Path.Combine(assets, "sprites", "hamster");
         string preview = Path.Combine(assets, "preview");
@@ -28,15 +40,28 @@ internal static class Program
         {
             SaveStrip(clip, Path.Combine(sprites, clip.Name + ".png"));
             SaveMeta(clip, Path.Combine(sprites, clip.Name + ".json"));
-            Console.Error.WriteLine($"sheet {clip.Name,-6} {clip.FrameCount} frames @ {clip.Fps} fps");
+            Console.Error.WriteLine($"sheet {clip.Name,-14} {clip.FrameCount,2} frames @ {clip.Fps,2} fps  {clip.DurationSeconds:0.00} s{(clip.Loop ? "  boucle" : "")}");
+        }
+        Console.Error.WriteLine($"total : {clips.Values.Sum(c => c.FrameCount)} frames, {clips.Count} clips");
+
+        SaveContactSheet(clips.Values, Path.Combine(preview, "contact.png"), zoom: 1);
+        SaveHero(Path.Combine(preview, "hero.png"));
+        SaveMiniComparison(clips, Path.Combine(preview, "mini.png"));
+
+        if (review != null)
+        {
+            Directory.CreateDirectory(review);
+            foreach (var clip in clips.Values)
+                SaveContactSheet(new[] { clip }, Path.Combine(review, clip.Name + ".png"), zoom: 3, perRow: 4);
+            Console.Error.WriteLine("relecture : " + review);
         }
 
-        SaveContactSheet(clips.Values, Path.Combine(preview, "contact.png"));
-        SaveHero(Path.Combine(preview, "hero.png"));
-        SaveMiniComparison(Path.Combine(preview, "mini.png"));
+        var problems = Check.All(clips, Clips.BuildAll(0, withBow: false));
+        foreach (var p in problems) Console.Error.WriteLine("ECHEC " + p);
+        Console.Error.WriteLine(problems.Count == 0 ? "controles : tous passes" : $"controles : {problems.Count} echec(s)");
 
         Console.Error.WriteLine("assets: " + assets);
-        return 0;
+        return problems.Count == 0 ? 0 : 1;
     }
 
     static string FindRepoRoot()
@@ -65,31 +90,45 @@ internal static class Program
         sb.Append($"  \"loop\": {(clip.Loop ? "true" : "false")},\n");
         sb.Append($"  \"frameSize\": [{PixelCanvas.Size}, {PixelCanvas.Size}],\n");
         sb.Append($"  \"pivot\": [{PixelCanvas.Size / 2}, {PixelCanvas.Baseline}],\n");
-        sb.Append($"  \"leavesBaseline\": {(clip.LeavesBaseline ? "true" : "false")}\n");
+        sb.Append($"  \"leavesBaseline\": {(clip.LeavesBaseline ? "true" : "false")},\n");
+        sb.Append($"  \"mirrorable\": {(clip.Mirrorable ? "true" : "false")}\n");
         sb.Append("}\n");
         File.WriteAllText(path, sb.ToString());
     }
 
-    static void SaveContactSheet(IEnumerable<Clip> clips, string path)
+    /// <summary>
+    /// Planche de contact. A 1x, c'est la taille reelle a l'echelle 1 : c'est a cette
+    /// taille qu'un clip doit se lire. Les clips longs passent a la ligne.
+    /// </summary>
+    static void SaveContactSheet(IEnumerable<Clip> clips, string path, int zoom, int perRow = 12)
     {
-        const int s = PixelCanvas.Size, zoom = 2, pad = 6;
+        const int s = PixelCanvas.Size, pad = 6, label = 16;
         var list = clips.ToList();
-        int cols = list.Max(c => c.FrameCount);
-        int w = pad + cols * (s * zoom + pad);
-        int h = pad + list.Count * (s * zoom + pad);
+        int cols = Math.Min(perRow, list.Max(c => c.FrameCount));
+        int cell = s * zoom + pad;
+        int rows = list.Sum(c => (c.FrameCount + perRow - 1) / perRow);
+        int w = pad + cols * cell;
+        int h = pad + rows * cell + list.Count * label;
 
         using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
         Checkerboard(bmp);
-        for (int r = 0; r < list.Count; r++)
-        for (int f = 0; f < list[r].FrameCount; f++)
-            BlitIndexed(bmp, list[r].Frames[f], pad + f * (s * zoom + pad), pad + r * (s * zoom + pad), zoom);
-
-        using (var g = Graphics.FromImage(bmp))
-        using (var font = new Font("Consolas", 11))
-        for (int r = 0; r < list.Count; r++)
-            g.DrawString($"{list[r].Name}  {list[r].FrameCount}f @{list[r].Fps}fps",
-                font, Brushes.Black, pad + 2, pad + r * (s * zoom + pad) + 2);
-
+        using var g = Graphics.FromImage(bmp);
+        using var font = new Font("Consolas", 9);
+        int y = pad;
+        foreach (var clip in list)
+        {
+            string kind = clip.Loop ? "boucle" : "one-shot";
+            g.DrawString($"{clip.Name}  {clip.FrameCount}f @{clip.Fps}fps  {clip.DurationSeconds:0.0}s  {kind}",
+                font, Brushes.Black, pad, y);
+            y += label;
+            for (int f = 0; f < clip.FrameCount; f++)
+            {
+                int col = f % perRow;
+                if (f > 0 && col == 0) y += cell;
+                BlitIndexed(bmp, clip.Frames[f], pad + col * cell, y, zoom);
+            }
+            y += cell;
+        }
         bmp.Save(path, ImageFormat.Png);
     }
 
@@ -103,19 +142,54 @@ internal static class Program
         bmp.Save(path, ImageFormat.Png);
     }
 
-    static void SaveMiniComparison(string path)
+    /// <summary>
+    /// Minis. Ligne 1 : le grand et ses six teintes de noeud. Ligne 2 : une frame de
+    /// chaque clip d'etat, reduite de moitie a l'echelle 2, noeud recolore par table
+    /// comme le fera l'app. Ligne 3 : les FX de minis, frame par frame.
+    /// </summary>
+    static void SaveMiniComparison(Dictionary<string, Clip> clips, string path)
     {
-        const int s = PixelCanvas.Size;
-        var full = HamsterSprite.Render(Pose.Default);
-        using var bmp = new Bitmap(s * 2 + 6 * (s + 4), s * 2, PixelFormat.Format32bppArgb);
+        const int s = PixelCanvas.Size, m = s / 2, gap = 4;
+        string[] states =
+        {
+            Clips.Idle, Clips.WorkLaptop, Clips.WorkBook, Clips.WorkTerminal, Clips.WorkLab, Clips.WorkConductor,
+            Clips.Think, Clips.Phone, Clips.Celebrate, Clips.Error,
+            Clips.IdleConsole, Clips.IdleSnack, Clips.IdleSleep, Clips.IdleStretch, Clips.IdleWheel,
+        };
+        string[] fx = { Clips.FxPop, Clips.FxSparkle };
+        int fxFrames = fx.Sum(n => clips[n].FrameCount);
+        int w = Math.Max(s * 2 + 6 * (m * 2 + gap), Math.Max(states.Length, fxFrames + 1) * (m * 2 + gap));
+        int h = s * 2 + (m * 2 + gap) * 2 + gap;
+
+        using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
         Checkerboard(bmp);
-        BlitIndexed(bmp, full, 0, 0, 2);
+        BlitIndexed(bmp, HamsterSprite.Render(Pose.Default), 0, 0, 2);
+        var still = HamsterSprite.Render(Pose.Default);
         for (int hue = 0; hue < Palette.BowHues.Length; hue++)
         {
-            var p = Pose.Default;
-            p.BowHue = hue;
-            var mini = PixelCanvas.Downscale2x(HamsterSprite.Render(p));
-            BlitIndexedSized(bmp, mini, s / 2, s * 2 + hue * (s + 4), s / 2, 2);
+            var mini = PixelCanvas.Downscale2x(PixelCanvas.Remap(still, Palette.BowRemap(hue)));
+            BlitIndexedSized(bmp, mini, m, s * 2 + hue * (m * 2 + gap), m, 2);
+        }
+
+        int y = s * 2 + gap;
+        for (int i = 0; i < states.Length; i++)
+        {
+            var clip = clips[states[i]];
+            var frame = clip.Frames[Math.Min(clip.FrameCount - 1, clip.FrameCount / 3)];
+            var mini = PixelCanvas.Downscale2x(PixelCanvas.Remap(frame, Palette.BowRemap(i % Palette.BowHues.Length)));
+            BlitIndexedSized(bmp, mini, m, i * (m * 2 + gap), y, 2);
+        }
+
+        y += m * 2 + gap;
+        int x = 0;
+        foreach (var name in fx)
+        {
+            foreach (var frame in clips[name].Frames)
+            {
+                BlitIndexedSized(bmp, PixelCanvas.Downscale2x(frame), m, x, y, 2);
+                x += m * 2 + gap;
+            }
+            x += gap * 4;
         }
         bmp.Save(path, ImageFormat.Png);
     }
@@ -139,18 +213,31 @@ internal static class Program
                 for (int x = 0; x < size; x++)
                 {
                     uint argb = Palette.Argb[indices[y * size + x]];
-                    if ((argb >> 24) == 0) continue;
+                    uint a = argb >> 24;
+                    if (a == 0) continue;
                     for (int zy = 0; zy < zoom; zy++)
                     for (int zx = 0; zx < zoom; zx++)
                     {
                         int px = dx + x * zoom + zx, py = dy + y * zoom + zy;
-                        if ((uint)px < bmp.Width && (uint)py < bmp.Height)
-                            baseP[py * stride + px] = argb;
+                        if ((uint)px >= bmp.Width || (uint)py >= bmp.Height) continue;
+                        // l'ombre est semi-transparente : on la compose sur le damier, sinon elle lit comme un trou
+                        baseP[py * stride + px] = a == 255 ? argb : Blend(baseP[py * stride + px], argb);
                     }
                 }
             }
         }
         finally { bmp.UnlockBits(data); }
+    }
+
+    static uint Blend(uint dst, uint src)
+    {
+        // sur fond transparent (les sheets), le pixel semi-transparent reste tel quel
+        if ((dst >> 24) == 0) return src;
+        uint a = src >> 24;
+        uint r = (((src >> 16) & 0xFF) * a + ((dst >> 16) & 0xFF) * (255 - a)) / 255;
+        uint g = (((src >> 8) & 0xFF) * a + ((dst >> 8) & 0xFF) * (255 - a)) / 255;
+        uint b = ((src & 0xFF) * a + (dst & 0xFF) * (255 - a)) / 255;
+        return 0xFF000000 | (r << 16) | (g << 8) | b;
     }
 
     static void Checkerboard(Bitmap bmp)

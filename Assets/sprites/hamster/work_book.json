@@ -1,6 +1,6 @@
 {
-  "frameCount": 6,
-  "fps": 5,
+  "frameCount": 8,
+  "fps": 8,
   "loop": true,
   "frameSize": [128, 128],
   "pivot": [64, 121],

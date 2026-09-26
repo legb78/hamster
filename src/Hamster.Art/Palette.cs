@@ -100,6 +100,22 @@ public static class Palette
         (AccentPurp,  AccentPurp,  BowLight),
     };
 
+    /// <summary>
+    /// Table de remappage qui recolore le noeud d'une frame rendue en teinte 0 vers la
+    /// teinte voulue. Valable parce qu'AUCUN autre element que le noeud n'utilise les
+    /// indices 13 a 15 : SpriteGen le verifie a chaque generation.
+    /// </summary>
+    public static byte[] BowRemap(int hue)
+    {
+        var t = new byte[Count];
+        for (int i = 0; i < Count; i++) t[i] = (byte)i;
+        var (dark, mid, light) = BowHues[((hue % BowHues.Length) + BowHues.Length) % BowHues.Length];
+        t[BowDark] = dark;
+        t[BowMid] = mid;
+        t[BowLight] = light;
+        return t;
+    }
+
     /// <summary>Hash FNV-1a stable : le meme workspace garde la meme couleur d'une session a l'autre.</summary>
     public static int HueIndexFor(string identity)
     {

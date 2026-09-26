@@ -5,5 +5,5 @@
   "frameSize": [128, 128],
   "pivot": [64, 121],
   "leavesBaseline": false,
-  "mirrorable": true
+  "mirrorable": false
 }
