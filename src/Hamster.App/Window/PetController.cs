@@ -242,7 +242,12 @@ internal sealed class PetController : IDisposable
         // Claude Desktop : un coup d'oeil toutes les deux secondes. C'est une
         // enumeration de processus, pas un evenement : Windows n'en offre pas
         // sans activer l'audit des processus, qui est un reglage de securite
-        if (_housekeepingTicks % 2 == 1) SetClaudeAbsent(!ClaudeDesktopPresent());
+        if (_housekeepingTicks % 2 == 1)
+        {
+            // un marqueur ajoute a la main dans settings.json compte sans redemarrer
+            _settings.RefreshMarkersFromDisk();
+            SetClaudeAbsent(!ClaudeDesktopPresent());
+        }
 
         // certaines applications s'imposent en topmost et nous passent devant :
         // on se replace regulierement, ca coute un appel toutes les deux secondes

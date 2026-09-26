@@ -15,10 +15,17 @@ Le SDK .NET suffit (testé avec 9.0.306). Ni Visual Studio, ni MSVC Build Tools.
 .\Scripts\run.ps1     # lance, logs sur stderr dans la console
 ```
 
-Pour quitter : clic droit sur le hamster, ou l'icône dans la zone de notification → Quitter.
+**Par défaut, le hamster reste caché tant que Claude Desktop ne tourne pas** (voir plus bas) :
+sans Claude Desktop, seule son icône apparaît dans la zone de notification — sous la flèche
+`^` si Windows l'y range. Menu → décocher **Seulement avec Claude Desktop** pour le voir.
+Une seule instance par session : `run.ps1` arrête l'instance installée, qui revient à la
+prochaine ouverture de session.
+
+Menu : clic droit sur le hamster, ou clic (gauche ou droit) sur son icône de notification.
+Pour quitter : menu → Quitter.
 
 Les réglages persistent dans `%APPDATA%\Hamster\settings.json` (échelle, opacité, position, pause,
-mode Claude Desktop).
+mode Claude Desktop, marqueurs de chemin).
 
 ## Avec Claude Desktop
 
@@ -35,11 +42,27 @@ Délai : jusqu'à 2 s, le temps d'une énumération de processus.
 
 Le nom de processus ne suffit pas à reconnaître Claude Desktop : Claude Code (CLI, extension
 VS Code) s'appelle lui aussi `claude.exe`. Le hamster lit donc le chemin de l'exécutable et
-cherche `\WindowsApps\Claude_`, le dossier du paquet MSIX. Si Claude Desktop est installé
-ailleurs, ajouter un fragment de son chemin à `ClaudeDesktopPathMarkers` dans les réglages.
+cherche `\WindowsApps\Claude_`, le dossier du paquet MSIX. Conséquence : **Claude Code seul,
+dans un terminal ou VS Code, ne fait pas apparaître le hamster.**
+
+Si Claude Desktop est installé ailleurs, ajouter un fragment de son chemin dans
+`%APPDATA%\Hamster\settings.json` (créer le fichier s'il n'existe pas ; les clés absentes
+gardent leur valeur par défaut). En JSON, **les antislashs se doublent** :
+
+```json
+{ "ClaudeDesktopPathMarkers": ["\\WindowsApps\\Claude_", "\\chemin\\vers\\Claude\\"] }
+```
+
+Le hamster relit ce réglage dans les 2 s, sans redémarrage, et ne l'écrase plus en sauvegardant.
+Commentaires et virgule finale sont tolérés ; un fichier vraiment illisible est copié en
+`settings.json.bad` et signalé par une notification Windows.
 
 Menu → **Seulement avec Claude Desktop** : décoché, le hamster reste visible en permanence.
 Pendant l'attente, l'icône de la zone de notification reste là pour quitter ou changer de mode.
+
+Les scripts arrêtent le hamster proprement (il retire son icône de notification) avant de
+recourir au kill, et seulement dans la session Windows courante. `install.ps1` lève aussi une
+désactivation faite dans le Gestionnaire des tâches ; `uninstall.ps1` retire les deux entrées.
 
 ## Structure
 
@@ -53,7 +76,7 @@ src/Hamster.App/
   Render/            bibliothèque de sprites (miroir, recolorisation), animateur
   State/             balade du personnage
 Assets/              palette.gpl, sprites/hamster/, preview/
-Scripts/             build.ps1, run.ps1, shot.ps1, install.ps1, uninstall.ps1
+Scripts/             build.ps1, run.ps1, shot.ps1, install.ps1, uninstall.ps1, common.ps1
 ```
 
 ## Adaptation macOS → Windows : ce qui a changé et pourquoi

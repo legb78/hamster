@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using Hamster.App.Window;
 using Hamster.Art;
@@ -15,7 +16,13 @@ internal sealed class PetApplicationContext : ApplicationContext
     readonly PetController _controller;
     readonly NotifyIcon _tray;
     readonly ContextMenuStrip _menu;
+    readonly RegisteredWaitHandle _quitWait;
     IntPtr _iconHandle;
+
+    // NotifyIcon n'expose pas l'ouverture de son menu. Sa methode privee fait le
+    // SetForegroundWindow sans lequel le menu ne se ferme pas quand on clique ailleurs
+    static readonly MethodInfo? ShowTrayMenu = typeof(NotifyIcon).GetMethod("ShowContextMenu",
+        BindingFlags.Instance | BindingFlags.NonPublic);
 
     ToolStripMenuItem _pauseItem = null!;
     ToolStripMenuItem _claudeItem = null!;
@@ -23,7 +30,7 @@ internal sealed class PetApplicationContext : ApplicationContext
     readonly List<(ToolStripMenuItem Item, int Value)> _scaleItems = new();
     readonly List<(ToolStripMenuItem Item, int Value)> _opacityItems = new();
 
-    public PetApplicationContext()
+    public PetApplicationContext(EventWaitHandle quit)
     {
         _settings = Settings.Load();
         _controller = new PetController(_settings);
@@ -37,10 +44,41 @@ internal sealed class PetApplicationContext : ApplicationContext
             Visible = true,
             ContextMenuStrip = _menu,
         };
+        _tray.MouseClick += OnTrayClick;
+        _settings.Unreadable += ShowUnreadable;
 
         _controller.ClaudePresenceChanged += _ => UpdateTrayText();
         _controller.Start();
         UpdateTrayText();
+        if (_settings.LoadError != null) ShowUnreadable(_settings.LoadError);
+        if (ShowTrayMenu == null) Diagnostics.Warn("NotifyIcon.ShowContextMenu introuvable, repli sur Menu.Show");
+
+        // le rappel arrive sur un thread du pool : on repasse sur le thread UI, ou
+        // vivent la boucle de messages et l'icone. La fenetre a son handle depuis Start
+        var window = _controller.Window;
+        _quitWait = ThreadPool.RegisterWaitForSingleObject(quit, (_, _) =>
+        {
+            try { window.BeginInvoke(new Action(ExitThreadCore)); }
+            catch (Exception e) { Diagnostics.Warn("arret propre impossible: " + e.Message); }
+        }, null, Timeout.Infinite, executeOnlyOnce: true);
+    }
+
+    void OnTrayClick(object? sender, MouseEventArgs e)
+    {
+        // le clic droit ouvre deja le menu ; le gauche, celui qu'on tente en premier,
+        // ne faisait rien
+        if (e.Button != MouseButtons.Left) return;
+        if (ShowTrayMenu != null) ShowTrayMenu.Invoke(_tray, null);
+        else _menu.Show(Cursor.Position);
+    }
+
+    // stderr n'est visible nulle part pour un WinExe lance a l'ouverture de session :
+    // une notification Windows est le seul moyen de dire que le fichier est casse
+    void ShowUnreadable(string error)
+    {
+        string detail = error.Length > 120 ? error[..120] + "..." : error;
+        _tray.ShowBalloonTip(8000, "Hamster : settings.json illisible",
+            "Ta version est gardee dans settings.json.bad. " + detail, ToolTipIcon.Warning);
     }
 
     // l'icone reste dans la zone de notification pendant l'attente : c'est le seul
@@ -124,6 +162,7 @@ internal sealed class PetApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            _quitWait.Unregister(null);
             _tray.Visible = false;
             _tray.Dispose();
             _menu.Dispose();

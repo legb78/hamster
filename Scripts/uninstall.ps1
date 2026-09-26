@@ -3,14 +3,14 @@
 # sont conserves.
 $ErrorActionPreference = "Stop"
 if (-not $env:LOCALAPPDATA) { throw "LOCALAPPDATA introuvable" }
+. "$PSScriptRoot\common.ps1"
 
 $dest = Join-Path $env:LOCALAPPDATA "Programs\Hamster"
-$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 
-Remove-ItemProperty -Path $runKey -Name "Hamster" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path $RunKey -Name "Hamster" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path $StartupApprovedKey -Name "Hamster" -ErrorAction SilentlyContinue
 
-$running = Get-Process Hamster -ErrorAction SilentlyContinue
-if ($running) { $running | Stop-Process -Force; $running | Wait-Process -Timeout 10 }
+Stop-Hamster
 
 if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 

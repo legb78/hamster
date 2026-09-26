@@ -5,6 +5,12 @@ internal static class Program
     /// <summary>Une seule instance par session : une seconde copie se ferme immediatement.</summary>
     const string MutexName = @"Local\Hamster.DesktopPet.SingleInstance";
 
+    /// <summary>
+    /// Signale par les scripts pour un arret propre. Un kill ne passe pas par Dispose :
+    /// l'icone de notification resterait en fantome jusqu'au survol de la souris.
+    /// </summary>
+    public const string QuitEventName = @"Local\Hamster.DesktopPet.Quit";
+
     [STAThread]
     static int Main()
     {
@@ -25,7 +31,12 @@ internal static class Program
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             Diagnostics.Warn("exception non geree: " + e.ExceptionObject);
 
-        using var context = new PetApplicationContext();
+        // auto-reset : l'attente consomme le signal. Et si un script tient encore le
+        // handle d'un signal pose pour l'instance precedente, on repart de zero
+        using var quit = new EventWaitHandle(false, EventResetMode.AutoReset, QuitEventName);
+        quit.Reset();
+
+        using var context = new PetApplicationContext(quit);
         Application.Run(context);
         return 0;
     }
