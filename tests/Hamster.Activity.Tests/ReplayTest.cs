@@ -27,7 +27,7 @@ static class ReplayTest
             var model = new ActivityModel();
             var byKind = new SortedDictionary<ActivityKind, long>();
             long files = 0, mainFiles = 0, agentFiles = 0, ignored = 0, withLabel = 0, foreground = 0, bytes = 0, lines = 0, backwards = 0;
-            long invalid = 0, trailing = 0, trailingActive = 0, unmatchedResults = 0, exceptions = 0, skippedBusy = 0;
+            long invalid = 0, trailing = 0, trailingActive = 0, unmatchedResults = 0, exceptions = 0, skippedBusy = 0, lateApiErrors = 0;
             var scratch = new byte[256 * 1024];
 
             foreach (var path in Directory.EnumerateFiles(root, "*.jsonl", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true }))
@@ -41,6 +41,7 @@ static class ReplayTest
 
                 var started = new HashSet<string>(StringComparer.Ordinal);
                 var latest = DateTimeOffset.MinValue;
+                var lastEnd = DateTimeOffset.MinValue;
                 var tail = new TailFile(path, 0);
                 try
                 {
@@ -61,6 +62,9 @@ static class ReplayTest
                                     byKind[e.Kind] = byKind.GetValueOrDefault(e.Kind) + 1;
                                     if (e.Kind is ActivityKind.ToolStarted or ActivityKind.AskedUser && e.Detail != null) started.Add(e.Detail);
                                     if (e.Kind == ActivityKind.ToolFinished && (e.Detail == null || !started.Contains(e.Detail))) unmatchedResults++;
+                                    // api_error du fil principal date d'avant une fin de tour deja lue : le modele l'ignore
+                                    if (e.AgentId == null && e.Kind == ActivityKind.ApiError && e.Time <= lastEnd) lateApiErrors++;
+                                    if (e.AgentId == null && e.Kind == ActivityKind.TurnEnded && e.Time > lastEnd) lastEnd = e.Time;
                                     model.Apply(e);
                                 }
                             });
@@ -89,6 +93,7 @@ static class ReplayTest
             Console.WriteLine($"      lignes non JSON {invalid}, fins sans saut de ligne {trailing} (+{trailingActive} fichiers en cours d'ecriture), fichiers occupes {skippedBusy}");
             Console.WriteLine($"      tool_result sans tool_use dans le meme fichier (information) : {unmatchedResults}");
             Console.WriteLine($"      evenements plus anciens qu'un precedent du meme fichier (information) : {backwards}");
+            Console.WriteLine($"      api_error du fil principal lus apres la fin du tour et dates d'avant elle, ignores (information) : {lateApiErrors} sur {byKind.GetValueOrDefault(ActivityKind.ApiError)} ApiError");
             if (snap != null)
                 Console.WriteLine($"      etat du modele a la fin : {snap.State}, {snap.Minis.Count} minis (+{snap.MinisOverflow}), session active : {snap.AnySessionActive}");
 

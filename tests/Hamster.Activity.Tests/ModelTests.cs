@@ -5,7 +5,7 @@ namespace Hamster.Activity.Tests;
 static class ModelTests
 {
     static readonly DateTimeOffset T0 = Jsonl.T0;
-    const string A = "session-a", B = "session-b";
+    const string A = "session-a", B = "session-b", C = "session-c";
 
     static DateTimeOffset At(double s) => T0.AddSeconds(s);
 
@@ -149,6 +149,27 @@ static class ModelTests
             T.Eq(PetState.WaitingUser, S(q, 603), "question : toujours en attente");
         });
 
+        T.Case("question ou plan suivis de la notification permission_prompt du meme dialogue : le delai reste d'1 h", () =>
+        {
+            // d'apres le binaire de Claude Code 2.1.283 (deduction, non observee), ces dialogues
+            // emettent aussi une Notification permission_prompt, environ 6 s apres le tool_use
+            var src = new TranscriptSource(Jsonl.Session, null, null);
+            foreach (var tool in new[] { "AskUserQuestion", "ExitPlanMode" })
+            {
+                var m = new ActivityModel();
+                foreach (var line in new[] { Jsonl.Prompt(0), Jsonl.Assistant(1, "tool_use", Jsonl.ToolUse(tool, "q")) })
+                    foreach (var e in TranscriptParser.ParseLine(line, src))
+                    {
+                        m.Apply(e);
+                        m.Snapshot(e.Time);
+                    }
+                m.Apply(new ActivityEvent(At(7), K.NeedsUser, Jsonl.Session, null, Jsonl.Cwd, null, false, "permission_prompt"));
+                T.Eq(PetState.WaitingUser, S(m, 700), tool + " : toujours en attente apres 10 min");
+                T.Eq(PetState.WaitingUser, S(m, 3500), tool + " : a 3500 s");
+                T.Eq(PetState.Idle, S(m, 3601.5), tool + " : fini 1 h apres la question, pas 1 h apres la notification");
+            }
+        });
+
         T.Case("ToolFinished en erreur => Error 2 s, puis Working", () =>
         {
             var m = M(E(K.PromptSubmitted, 0), E(K.ToolStarted, 1, tool: "Bash", detail: "b"), E(K.ToolFinished, 2, detail: "b", error: true));
@@ -162,6 +183,18 @@ static class ModelTests
             var m = M(E(K.PromptSubmitted, 0), E(K.ApiError, 1, error: true));
             T.Eq(PetState.Error, S(m, 2), "erreur");
             T.Eq(PetState.Working, S(m, 3.5), "reprise");
+        });
+
+        T.Case("system api_error date d'avant la fin du tour, lu apres elle : ne rouvre pas le tour", () =>
+        {
+            // la relecture des vrais transcripts en compte (ligne "api_error lus apres la fin du tour")
+            var m = M(E(K.PromptSubmitted, 0), E(K.ToolStarted, 1, tool: "Bash", detail: "b"), E(K.ToolFinished, 2, detail: "b"),
+                E(K.TurnEnded, 3), E(K.ApiError, 2.5, error: true, detail: "api_error"));
+            T.Eq(PetState.Celebrating, S(m, 4), "fete");
+            T.Eq(PetState.Idle, S(m, 7), "puis repos, et non Working pendant 3 min");
+            m.Apply(E(K.PromptSubmitted, 10));
+            m.Apply(E(K.ApiError, 11, error: true, detail: "api_error"));
+            T.Eq(PetState.Error, S(m, 11.5), "une erreur du tour suivant compte");
         });
 
         T.Case("TurnEnded apres un outil => Celebrating 3 s, puis inactive", () =>
@@ -472,6 +505,129 @@ static class ModelTests
             T.Eq(1, changes, "un seul changement sur 400 s");
         });
 
+        T.Case("attente perimee : pas de successeur sur le point de s'eteindre (C, A, C en 0,5 s)", () =>
+        {
+            // A n'est plus active que par un sous-agent muet, sans outil en suspens, qui s'eteint a
+            // 131,5 s ; sa fin de tour, a 20 s, suit le debut de l'attente de C. Sans marge, A prenait
+            // la place a 131,5 s, quand l'attente de C devient perimee, et la rendait a C 0,5 s apres
+            var m = M(E(K.SubagentActivity, -48.5, agent: "bg", detail: "fond"),
+                E(K.PromptSubmitted, 10, session: C), E(K.AskedUser, 11, session: C, tool: "AskUserQuestion", detail: "q"),
+                E(K.PromptSubmitted, 12), E(K.TurnEnded, 20));
+            var mains = new List<string?>();
+            for (double t = 11; t <= 400; t += 0.5) mains.Add(m.Snapshot(At(t)).MainSessionId);
+            T.True(mains.All(x => x == C), "C garde la place : " + string.Join(" ", Runs(mains, 11)));
+        });
+
+        T.Case("attente perimee qui a cede la place : ne la reprend pas quand le successeur s'eteint", () =>
+        {
+            // A, active jusqu'a 200 s par son sous-agent, succede a C quand l'attente de C devient
+            // perimee. A eteinte, C ne revient pas sans evenement nouveau : elle reste en mini
+            var m = M(E(K.PromptSubmitted, 10, session: C), E(K.AskedUser, 11, session: C, tool: "AskUserQuestion", detail: "q"),
+                E(K.SubagentActivity, 20, agent: "bg", detail: "fond"));
+            var mains = new List<string?>();
+            for (double t = 21; t <= 290; t += 0.5) mains.Add(m.Snapshot(At(t)).MainSessionId);
+            T.Eq(C, mains[Index(131, 21)], "C tant que son attente est fraiche");
+            T.Eq(A, mains[Index(131.5, 21)], "puis A, active depuis le debut de l'attente");
+            T.Eq(A, mains[Index(200, 21)], "A jusqu'a son dernier instant");
+            T.True(mains.Skip(Index(200.5, 21)).All(x => x == null), "puis plus de principale : " + string.Join(" ", Runs(mains, 21)));
+            var s = m.Snapshot(At(290));
+            T.Eq(PetState.WaitingUser, s.Minis.Single(x => x.Id == C).State, "C en mini, au telephone");
+            // un evenement nouveau de C : elle redevient candidate
+            m.Apply(E(K.ToolFinished, 300, session: C, detail: "q"));
+            T.Eq(C, m.Snapshot(At(300.5)).MainSessionId, "C repond : elle travaille, principale");
+        });
+
+        T.Case("attente cedee puis nouvelle attente de la meme session : reprend la place", () =>
+        {
+            var m = M(E(K.PromptSubmitted, 10, session: C), E(K.NeedsUser, 11, session: C, detail: "permission_prompt"),
+                E(K.SubagentActivity, 20, agent: "bg", detail: "fond"));
+            for (double t = 21; t <= 250; t += 0.5) m.Snapshot(At(t));
+            T.Eq<string?>(null, m.Snapshot(At(250)).MainSessionId, "C a cede, A eteinte");
+            m.Apply(E(K.NeedsUser, 251, session: C, detail: "permission_prompt"));
+            var s = m.Snapshot(At(251.5));
+            T.Eq(C, s.MainSessionId, "nouvelle demande : C principale");
+            T.Eq(PetState.WaitingUser, s.State, "au telephone");
+        });
+
+        T.Case("fuzz, 3 sessions au pas de 0,5 s : jamais de retour X, Y, X sans evenement nouveau", () =>
+        {
+            int seeds = 120, departures = 0, returns = 0, quick = 0, yielded = 0;
+            long steps = 0;
+            var failures = new List<string>();
+            for (int seed = 1; seed <= seeds; seed++)
+            {
+                var (mains, touched) = Fuzz(seed, TimeSpan.FromHours(3));
+                int n = mains.Count;
+                steps += n;
+                // par session : prochain pas ou elle est principale, pas ou elle attend en mini, pas ou
+                // elle recoit un evenement (sommes cumulees)
+                var next = new int[FuzzIds.Length][];
+                var waitPre = new int[FuzzIds.Length][];
+                var touchPre = new int[FuzzIds.Length][];
+                var anyPre = new int[n + 1];
+                for (int x = 0; x < FuzzIds.Length; x++)
+                {
+                    next[x] = new int[n + 1];
+                    waitPre[x] = new int[n + 1];
+                    touchPre[x] = new int[n + 1];
+                    next[x][n] = n;
+                    for (int j = n - 1; j >= 0; j--) next[x][j] = mains[j].Id == FuzzIds[x] ? j : next[x][j + 1];
+                    for (int j = 0; j < n; j++)
+                    {
+                        waitPre[x][j + 1] = waitPre[x][j] + (mains[j].OthersWaiting(FuzzIds[x]) ? 1 : 0);
+                        touchPre[x][j + 1] = touchPre[x][j] + ((touched[j] >> x) & 1);
+                    }
+                }
+                for (int j = 0; j < n; j++) anyPre[j + 1] = anyPre[j] + (touched[j] != 0 ? 1 : 0);
+
+                for (int i = 1; i < n; i++)
+                {
+                    if (mains[i - 1].Id is not { } id || mains[i].Id == id) continue;
+                    departures++;
+                    int x = Array.IndexOf(FuzzIds, id);
+                    int k = next[x][i];
+                    if (k == n) continue;
+                    returns++;
+                    string where = $"graine {seed}, {id} quitte la place a {i * 0.5:F1} s et la reprend a {k * 0.5:F1} s";
+                    // un va-et-vient court sans aucun evenement : le choix se contredit d'un instantane a l'autre
+                    if (k - i <= 20)
+                    {
+                        quick++;
+                        if (anyPre[k + 1] - anyPre[i] == 0) failures.Add("va-et-vient sans evenement : " + where);
+                    }
+                    // une attente qui a cede la place, toujours la meme, ne la reprend pas sans rien dire de neuf
+                    bool stillWaiting = waitPre[x][k] - waitPre[x][i] == k - i;
+                    if (mains[i - 1].Waiting && stillWaiting && mains[k].Waiting)
+                    {
+                        yielded++;
+                        if (touchPre[x][k + 1] - touchPre[x][i] == 0) failures.Add("attente cedee reprise sans evenement : " + where);
+                    }
+                }
+            }
+            Console.WriteLine($"      {seeds} graines, {steps} instantanes, {departures} changements de principale, {returns} retours " +
+                              $"dont {quick} en moins de 10 s et {yielded} d'une attente cedee ; injustifies : " +
+                              $"{failures.Count(x => x.StartsWith("va-et-vient"))} va-et-vient, {failures.Count(x => x.StartsWith("attente"))} attentes cedees reprises");
+            T.True(failures.Count == 0, failures.Count + " retours injustifies, dont : " + string.Join(" ; ", failures.Take(3)));
+            T.True(departures > 1000 && returns > 100, "le fuzz fait bouger la principale");
+        });
+
+        T.Case("minis : une conversation en attente passe devant des sous-agents plus recents, jamais coupee", () =>
+        {
+            // B active depuis longtemps : par Since, elle serait la derniere et sortirait de l'instantane
+            var m = M(E(K.PromptSubmitted, -100, session: B, cwd: @"C:\work\projet-b"),
+                E(K.PromptSubmitted, -50, session: C), E(K.PromptSubmitted, 0), E(K.AskedUser, 1, tool: "AskUserQuestion", detail: "qa"),
+                E(K.AskedUser, 3, session: C, tool: "AskUserQuestion", detail: "qc"),
+                E(K.AskedUser, 5, session: B, tool: "AskUserQuestion", detail: "qb"));
+            for (int i = 1; i <= 8; i++) m.Apply(E(K.SubagentActivity, 10 + i, agent: "ag" + i, detail: "n" + i));
+            var s = m.Snapshot(At(20));
+            T.Eq(A, s.MainSessionId, "A principale");
+            T.Eq(PetState.WaitingUser, s.State, "A attend");
+            T.Eq(6, s.Minis.Count, "plafond");
+            T.Eq(4, s.MinisOverflow, "debordement");
+            T.Eq(B + "," + C + ",ag8,ag7,ag6,ag5", string.Join(",", s.Minis.Select(x => x.Id)), "attentes d'abord, la plus recente en tete, puis les plus recents");
+            T.True(s.Minis.Take(2).All(x => x.State == PetState.WaitingUser), "au telephone");
+        });
+
         T.Case("minis : plafond de 6, les plus recents d'abord, le reste en debordement", () =>
         {
             var m = M(E(K.PromptSubmitted, 0));
@@ -522,5 +678,174 @@ static class ModelTests
             T.Eq("demo-projet", m.Snapshot(At(5)).MainLabel, "libelle");
             T.Eq(PetState.Idle, m.Snapshot(At(8)).State, "puis repos");
         });
+    }
+
+    /// <summary>Principale en suites "id@heure", pour les messages d'echec.</summary>
+    static IEnumerable<string> Runs(List<string?> mains, double start)
+    {
+        for (int i = 0; i < mains.Count; i++)
+            if (i == 0 || mains[i] != mains[i - 1]) yield return $"{mains[i] ?? "-"}@{start + i * 0.5:F1}";
+    }
+
+    static int Index(double t, double start) => (int)Math.Round((t - start) / 0.5);
+
+    // ---- fuzz de la principale ----------------------------------------------------
+
+    static readonly string[] FuzzIds = { A, B, C };
+
+    /// <summary>Principale d'un instantane, et les sessions qui attendent en mini (masque sur FuzzIds).</summary>
+    readonly record struct MainAt(string? Id, bool Waiting, int MinisWaiting)
+    {
+        public bool OthersWaiting(string id) => (MinisWaiting & (1 << Array.IndexOf(FuzzIds, id))) != 0;
+    }
+
+    /// <summary>
+    /// Trois sessions qui vivent au hasard : tours, outils, questions et plans, demandes du hook,
+    /// sous-agents de fond, erreurs, fins, et des silences de quelques secondes a plus de deux
+    /// heures, qui font jouer tous les delais. Instantane tous les 0,5 s, comme l'app. Rend la
+    /// principale de chaque pas, et le masque des sessions qui ont recu un evenement a ce pas.
+    /// </summary>
+    static (List<MainAt> Mains, List<int> Touched) Fuzz(int seed, TimeSpan duration)
+    {
+        var rng = new Random(seed);
+        var model = new ActivityModel();
+        var sessions = FuzzIds.Select(id => new FuzzSession(id) { Next = rng.NextDouble() * 120 }).ToArray();
+        var mains = new List<MainAt>();
+        var touched = new List<int>();
+        for (int step = 0; step * 0.5 <= duration.TotalSeconds; step++)
+        {
+            double t = step * 0.5;
+            int hit = 0;
+            for (int i = 0; i < sessions.Length; i++)
+            {
+                var f = sessions[i];
+                while (f.Next <= t)
+                {
+                    foreach (var e in f.Act(rng)) model.Apply(e);
+                    hit |= 1 << i;
+                    f.Next += FuzzDelay(rng);
+                }
+            }
+            var s = model.Snapshot(At(t));
+            int waiting = 0;
+            foreach (var mini in s.Minis)
+                if (mini.Kind == "session" && mini.State == PetState.WaitingUser) waiting |= 1 << Array.IndexOf(FuzzIds, mini.Id);
+            mains.Add(new MainAt(s.MainSessionId, s.State == PetState.WaitingUser, waiting));
+            touched.Add(hit);
+        }
+        return (mains, touched);
+    }
+
+    static double FuzzDelay(Random r) => r.NextDouble() switch
+    {
+        < 0.55 => 0.3 + r.NextDouble() * 10,
+        < 0.80 => 10 + r.NextDouble() * 110,
+        < 0.94 => 120 + r.NextDouble() * 480,
+        < 0.99 => 600 + r.NextDouble() * 2400,
+        _ => 3000 + r.NextDouble() * 6000,
+    };
+
+    /// <summary>Une session du fuzz : son tour, ses outils en suspens, sa question, ses sous-agents.</summary>
+    sealed class FuzzSession(string id)
+    {
+        public double Next;
+        readonly string _id = id;
+        bool _turn;
+        string? _asked;
+        int _serial;
+        readonly List<string> _tools = new();
+        readonly Dictionary<string, List<string>> _agents = new();
+        List<ActivityEvent> _out = new();
+
+        void Add(K kind, string? agent = null, string? tool = null, string? detail = null, bool error = false) =>
+            _out.Add(E(kind, Next, session: _id, agent: agent, tool: tool, detail: detail, error: error, cwd: @"C:\work\" + _id));
+
+        string NewId() => _id + "-" + ++_serial;
+
+        public List<ActivityEvent> Act(Random r)
+        {
+            _out = new List<ActivityEvent>();
+            double x = r.NextDouble();
+            if (!_turn)
+            {
+                if (x < 0.65) { _turn = true; Add(K.PromptSubmitted); }
+                else if (x < 0.9) Agent(r);
+                else Add(K.NeedsUser, detail: "permission_prompt");
+                return _out;
+            }
+            if (_asked != null && x < 0.4)
+            {
+                // reponse a la question ou au plan
+                _tools.Remove(_asked);
+                Add(K.ToolFinished, detail: _asked);
+                _asked = null;
+                return _out;
+            }
+            x = r.NextDouble();
+            if (x < 0.22)
+            {
+                var t = NewId();
+                _tools.Add(t);
+                Add(K.ToolStarted, tool: "Bash", detail: t);
+            }
+            else if (x < 0.36)
+            {
+                if (_tools.Count == 0) { Add(K.SessionActivity); return _out; }
+                var t = _tools[r.Next(_tools.Count)];
+                _tools.Remove(t);
+                if (t == _asked) _asked = null;
+                Add(K.ToolFinished, detail: t, error: r.Next(8) == 0);
+            }
+            else if (x < 0.44)
+            {
+                var t = NewId();
+                _tools.Add(t);
+                _asked = t;
+                Add(K.AskedUser, tool: r.Next(2) == 0 ? "AskUserQuestion" : "ExitPlanMode", detail: t);
+            }
+            else if (x < 0.52) Add(K.NeedsUser, detail: r.Next(4) == 0 ? "elicitation_dialog" : "permission_prompt");
+            else if (x < 0.74) Agent(r);
+            else if (x < 0.77) Add(K.ApiError, error: true, detail: "api_error");
+            else if (x < 0.90)
+            {
+                _turn = false;
+                _tools.Clear();
+                _asked = null;
+                Add(K.TurnEnded, detail: r.Next(5) == 0 ? "interrupted" : null);
+            }
+            else if (x < 0.93) Add(K.PromptSubmitted);
+            else Add(K.SessionActivity);
+            return _out;
+        }
+
+        /// <summary>Un pas d'un des deux sous-agents de fond de la session.</summary>
+        void Agent(Random r)
+        {
+            string agent = _id + "-ag" + r.Next(2);
+            double y = r.NextDouble();
+            if (!_agents.TryGetValue(agent, out var tools) || y < 0.3)
+            {
+                _agents[agent] = new List<string>();
+                Add(K.SubagentActivity, agent: agent, detail: "fond");
+            }
+            else if (y < 0.55)
+            {
+                var t = NewId();
+                tools.Add(t);
+                Add(K.ToolStarted, agent: agent, tool: "Bash", detail: t);
+            }
+            else if (y < 0.8 && tools.Count > 0)
+            {
+                var t = tools[0];
+                tools.RemoveAt(0);
+                Add(K.ToolFinished, agent: agent, detail: t);
+            }
+            else if (y < 0.9)
+            {
+                _agents.Remove(agent);
+                Add(K.SubagentEnded, agent: agent, detail: "completed");
+            }
+            else Add(K.SubagentActivity, agent: agent, detail: "fond");
+        }
     }
 }

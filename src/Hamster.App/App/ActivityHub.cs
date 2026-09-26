@@ -17,13 +17,20 @@ internal sealed class ActivityHub : IDisposable
     volatile bool _disposed;
     ActivitySnapshot _snapshot = new(PetState.Idle, null, null, null, false, Array.Empty<MiniInfo>(), 0);
 
-    public ActivityHub(Control ui)
+    /// <summary>projectsRoot et eventsPath : pour les tests ; par defaut, ceux des variables d'environnement ou du profil.</summary>
+    public ActivityHub(Control ui, string? projectsRoot = null, string? eventsPath = null)
     {
         _ui = ui;
-        ProjectsRoot = TranscriptPaths.DefaultProjectsRoot;
-        EventsPath = HookEventsWatcher.DefaultEventsPath;
+        ProjectsRoot = projectsRoot ?? TranscriptPaths.DefaultProjectsRoot;
+        EventsPath = eventsPath ?? HookEventsWatcher.DefaultEventsPath;
         _transcripts = new TranscriptWatcher(ProjectsRoot);
-        _hooks = new HookEventsWatcher(EventsPath);
+        // une demande du hook pour une session dont aucun transcript n'a rien dit est ecartee des
+        // le watcher et comptee dans son statut ("N ignorees") ; le modele l'ignorerait de toute
+        // facon. KnowsSession prend le verrou du modele : sans risque depuis le thread du watcher.
+        // Seul ecart : une session dont la premiere ligne de transcript attend encore dans la file
+        // du thread UI serait ecartee, alors que le modele l'aurait deja vue en l'appliquant. Sa
+        // premiere demande suit cette ligne de plusieurs secondes, la file se vide en millisecondes
+        _hooks = new HookEventsWatcher(EventsPath) { KnownSession = _model.KnowsSession };
     }
 
     public string ProjectsRoot { get; }
@@ -41,7 +48,12 @@ internal sealed class ActivityHub : IDisposable
         // le script est depose, jamais branche : les reglages de Claude Code restent a l'utilisateur
         try { Diagnostics.Info("hook: script pret dans " + HookInstaller.EnsureHookScript()); }
         catch (Exception e) { Diagnostics.Warn("hook: script non depose: " + e.Message); }
+        StartWatchers();
+    }
 
+    /// <summary>Lance les deux watchers, sans deposer le script du hook : les tests n'ecrivent rien dans ~/.hamster.</summary>
+    internal void StartWatchers()
+    {
         _transcripts.Events += OnEvents;
         _hooks.Events += OnEvents;
         _transcripts.Start();

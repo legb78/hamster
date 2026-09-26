@@ -25,8 +25,6 @@ internal sealed class PetController : IDisposable
     const double NudgeSpeed = 40;
     /// <summary>Longueur maximale d'une etiquette : une description de sous-agent peut etre longue.</summary>
     const int LabelMaxChars = 48;
-    /// <summary>Pas de son pendant l'amorcage : les transcripts relus ne sont pas des nouveautes.</summary>
-    const double QuietStartSeconds = 3;
 
     readonly Settings _settings;
     readonly SpriteLibrary _library;
@@ -135,7 +133,7 @@ internal sealed class PetController : IDisposable
     void OnSnapshot(ActivitySnapshot previous, ActivitySnapshot next)
     {
         double now = _clock.Elapsed.TotalSeconds;
-        bool quiet = Suspended || double.IsNaN(_hubStartedAt) || now - _hubStartedAt < QuietStartSeconds;
+        bool quiet = WaitingBell.Quiet(Suspended, _hubStartedAt, now);
         _snapshot = next;
         var born = _crowd.Sync(next.Minis, next.MinisOverflow, now, animate: !Suspended);
         // mis a jour meme en silence : une attente vue pendant l'amorcage ne sonne pas apres
@@ -148,7 +146,7 @@ internal sealed class PetController : IDisposable
         {
             // une conversation de plus attend, principale ou mini : les memes regles qu'avant
             // (Son coche, notifications acceptees), mais plus seulement pour la principale
-            if (joined.Count > 0) _sounds.PlayPhone();
+            if (WaitingBell.Rings(joined, quiet)) _sounds.PlayPhone();
             if (next.State == PetState.Celebrating && previous.State != PetState.Celebrating) _sounds.PlayDone();
             if (born.Any(m => m.Kind == "subagent")) _sounds.PlayPop();
         }
@@ -252,7 +250,8 @@ internal sealed class PetController : IDisposable
         public readonly List<LabelBox> Labels = new();
     }
 
-    readonly record struct MiniPlace(Mini Mini, int X, int Feet, bool Front, int Facing);
+    /// <summary>Feet : pieds a l'image courante, rebond compris ; Bob : ce rebond, que les etiquettes traitent a part.</summary>
+    readonly record struct MiniPlace(Mini Mini, int X, int Feet, int Bob, bool Front, int Facing);
 
     void Render()
     {
@@ -278,8 +277,9 @@ internal sealed class PetController : IDisposable
             double a = _crowd.AngleOf(m, now);
             var (dx, dy) = Orbit.At(a);
             double sin = Math.Sin(a);
+            int bob = Orbit.BobAt(now, m.BobSeed);
             // de face ils vont vers la droite, de dos vers la gauche : le regard suit la marche
-            places.Add(new MiniPlace(m, halfW + dx, feetRow + dy + Orbit.BobAt(now, m.BobSeed), sin > 0, sin >= 0 ? 1 : -1));
+            places.Add(new MiniPlace(m, halfW + dx, feetRow + dy + bob, bob, sin > 0, sin >= 0 ? 1 : -1));
         }
         // du plus loin au plus proche
         places.Sort((a, b) => a.Feet.CompareTo(b.Feet));
@@ -300,10 +300,11 @@ internal sealed class PetController : IDisposable
         int spriteW = w * s, spriteH = h * s;
         // le tampon agrandi est centre sur le principal : les bords de l'ecran, dans ses
         // coordonnees, tiennent donc sans connaitre encore la taille de la fenetre
-        int spriteLeft = CenterScreenX() - spriteW / 2;
-        var area = _screen.WorkingArea;
-        var labels = BuildLabels(places, mainLeft, mainTop, s, LabelLayout.FaceRect(mainClip, mainMirror, mainLeft, mainTop, s),
-            area.Left - spriteLeft, area.Right - spriteLeft, spriteH);
+        var (labelMinX, labelMaxX) = LabelLayout.ScreenBounds(_screen.WorkingArea, CenterScreenX(), spriteW);
+        var labels = BuildLabels(places, mainLeft, mainTop, s,
+            LabelLayout.FaceRect(mainClip, mainMirror, mainLeft, mainTop, s),
+            LabelLayout.HeadRect(mainClip, mainMirror, mainLeft, mainTop, s),
+            labelMinX, labelMaxX, spriteH);
         int minX = 0, maxX = spriteW, minY = 0;
         foreach (var l in labels)
         {
@@ -382,10 +383,11 @@ internal sealed class PetController : IDisposable
     /// Etiquettes a afficher, en pixels ecran relatifs au tampon sprite agrandi. Une conversation
     /// en attente porte en permanence son nom, qu'elle soit la principale ou un mini : c'est
     /// celle qui a besoin de toi. Au survol, celle du hamster survole. Toutes restent entre
-    /// minX et maxX (le bord de l'ecran) ; celles des minis evitent le visage du principal et
-    /// les etiquettes deja posees (LabelLayout).
+    /// minX et maxX (le bord de l'ecran) ; celles des minis evitent le visage du principal, sa
+    /// tete (bulle, telephone) quand la place le permet, et les etiquettes deja posees
+    /// (LabelLayout.MiniLabel).
     /// </summary>
-    List<LabelBox> BuildLabels(List<MiniPlace> places, int mainLeft, int mainTop, int s, Rectangle? face,
+    List<LabelBox> BuildLabels(List<MiniPlace> places, int mainLeft, int mainTop, int s, Rectangle? face, Rectangle? head,
         int minX, int maxX, int maxY)
     {
         var result = new List<LabelBox>();
@@ -403,11 +405,12 @@ internal sealed class PetController : IDisposable
             placed.Add(rect);
         }
 
-        // du plus proche au plus loin, dans un ordre qui ne depend pas du survol : survoler une
-        // etiquette ne doit pas la deplacer, sinon elle fuirait sous le curseur
-        for (int i = places.Count - 1; i >= 0; i--)
+        // du plus proche au plus loin, dans un ordre qui ne depend ni du survol ni du rebond :
+        // survoler une etiquette ne doit pas la deplacer, sinon elle fuirait sous le curseur, et
+        // deux minis a la meme profondeur echangeraient leurs places au rythme du sautillement
+        foreach (var p in places.OrderByDescending(x => x.Feet - x.Bob).ThenBy(x => x.Mini.Id, StringComparer.Ordinal))
         {
-            var m = places[i].Mini;
+            var m = p.Mini;
             if (!m.ShowsBody) continue;
             bool hovered = _hover == m.Id;
             bool waiting = m.Kind == "session" && m.State == PetState.WaitingUser;
@@ -415,11 +418,10 @@ internal sealed class PetController : IDisposable
             // en attente, le meme texte survole ou non : plus large, l'etiquette pourrait changer
             // de place (bord de l'ecran, visage) et quitter le curseur, qui la ferait revenir
             string text = Fit(waiting ? m.Label : MiniHoverText(m));
-            int top = places[i].Feet - SpriteLibrary.MiniBaseline + m.Body.Current.TopRow / 2;
-            var wanted = LabelLayout.Above(places[i].X * s, top * s, LabelSize(text));
-            var rect = LabelLayout.Place(wanted, face, placed, minX, maxX, maxY);
-            result.Add(new LabelBox(m.Id, text, rect, m.State == PetState.WaitingUser));
-            placed.Add(rect);
+            var (shown, reserved) = LabelLayout.MiniLabel(p.X, p.Feet - p.Bob, p.Bob, m.Body.Current.TopRow, LabelSize(text), s,
+                face, head, placed, minX, maxX, maxY);
+            result.Add(new LabelBox(m.Id, text, shown, m.State == PetState.WaitingUser));
+            placed.Add(reserved);
         }
         return result;
     }

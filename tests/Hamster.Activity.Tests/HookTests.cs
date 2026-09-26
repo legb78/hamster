@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Hamster.Activity.Tests;
 
@@ -270,6 +271,20 @@ static class HookTests
             T.Eq(5, hook.GetProperty("timeout").GetInt32(), "timeout");
             // le matcher couvre exactement les types que le watcher retient
             T.True(entry.GetProperty("matcher").GetString()!.Split('|').ToHashSet().SetEquals(HookEventsWatcher.NeedsUserTypes), "memes types");
+        });
+
+        T.Case("README : le bloc Notification a fusionner est celui de Hooks/settings-snippet.json", () =>
+        {
+            string readme = File.ReadAllText(Path.Combine(RepoRoot(), "README.md"));
+            // les blocs json du README qui declarent des hooks : il n'y en a qu'un
+            var blocks = Regex.Matches(readme, "```json[ \\t]*\\r?\\n(.*?)```", RegexOptions.Singleline)
+                .Select(m => m.Groups[1].Value).Where(b => b.Contains("\"hooks\"")).ToList();
+            T.Eq(1, blocks.Count, "blocs json avec des hooks");
+            using var fromReadme = JsonDocument.Parse(blocks[0]);
+            using var snippet = JsonDocument.Parse(File.ReadAllText(Path.Combine(RepoRoot(), "Hooks", "settings-snippet.json")));
+            static string? Matcher(JsonDocument d) => d.RootElement.GetProperty("hooks").GetProperty("Notification")[0].GetProperty("matcher").GetString();
+            T.Eq(Matcher(snippet), Matcher(fromReadme), "matcher du README");
+            T.True(JsonElement.DeepEquals(snippet.RootElement, fromReadme.RootElement), "bloc du README identique au fichier, a la mise en forme pres");
         });
 
         T.Case("hook.sh execute par sh : payload recopie + saut de ligne, code 0, lu par le watcher", () =>

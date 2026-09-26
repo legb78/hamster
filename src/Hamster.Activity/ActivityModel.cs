@@ -17,6 +17,11 @@ public sealed class ActivityModel
     readonly object _gate = new();
     readonly Dictionary<string, Session> _sessions = new(StringComparer.Ordinal);
     string? _mainId;
+    /// <summary>
+    /// Attentes perimees qui ont cede la place (session, WaitSince). Tant que la meme attente
+    /// dure, elle ne redevient candidate ni comme attente ni sans principale : elle reste en mini.
+    /// </summary>
+    readonly Dictionary<string, DateTimeOffset> _yielded = new(StringComparer.Ordinal);
 
     public ActivityModel(ActivityOptions? options = null)
     {
@@ -50,6 +55,8 @@ public sealed class ActivityModel
         public DateTimeOffset LastMainActivity;
         /// <summary>Un tour est en cours sur le fil principal.</summary>
         public bool Busy;
+        /// <summary>Derniere fin de tour du fil principal.</summary>
+        public DateTimeOffset TurnEndedAt;
         public DateTimeOffset TurnStart;
         public int TurnTools;
         public DateTimeOffset ActiveSince;
@@ -116,9 +123,15 @@ public sealed class ActivityModel
     /// </summary>
     void OnNeedsUser(Session s, ActivityEvent e)
     {
+        string? thread = e.AgentId ?? BlockedThread(s, e.Time);
+        // question ou plan du meme fil (AskUserQuestion, ExitPlanMode) : d'apres le binaire de
+        // Claude Code 2.1.283 (deduction, non observee), ces dialogues emettent aussi une
+        // Notification permission_prompt quelques secondes apres. C'est la meme attente : elle
+        // garde son heure et son delai d'1 h, au lieu de retomber aux 10 min du hook
+        if (s.Wait == Wait.Asked && thread == s.WaitThread) return;
         s.Wait = Wait.Needs;
         s.WaitSince = e.Time;
-        s.WaitThread = e.AgentId ?? BlockedThread(s, e.Time);
+        s.WaitThread = thread;
         if (s.Cwd == null && e.Cwd != null) s.Cwd = e.Cwd;
     }
 
@@ -193,6 +206,10 @@ public sealed class ActivityModel
                         if (a.ForegroundToolUseId == e.Detail) End(a, t);
                 break;
             case ActivityKind.ApiError:
+                // ligne system api_error datee d'avant la fin du tour mais ecrite apres elle (la
+                // relecture des vrais transcripts en compte) : elle ne rouvre pas un tour fini.
+                // Un sous-agent a deja cette regle : une ligne anterieure a sa fin est ignoree
+                if (t <= s.TurnEndedAt) return;
                 BeginWork(s, t, e.Kind, wasWaiting);
                 s.ErrorUntil = Later(s.ErrorUntil, t + _o.ErrorDuration);
                 break;
@@ -221,6 +238,7 @@ public sealed class ActivityModel
 
     void EndTurn(Session s, ActivityEvent e)
     {
+        if (e.Time > s.TurnEndedAt) s.TurnEndedAt = e.Time;
         // deuxieme fin du meme message (bloc thinking puis bloc text, tous deux en end_turn)
         if (!s.Busy) return;
         bool normal = e.Detail == null;
@@ -321,25 +339,32 @@ public sealed class ActivityModel
             var main = PickMain(views, now);
             _mainId = main?.Session.Id;
 
-            var minis = new List<MiniInfo>();
+            // WaitSince pour une conversation en attente, null pour les autres
+            var all = new List<(MiniInfo Info, DateTimeOffset? Wait)>();
             foreach (var v in views)
             {
                 foreach (var a in v.Session.Agents.Values)
                     if (AgentActive(a, now))
-                        minis.Add(new MiniInfo(a.Id, "subagent", a.Label ?? "sous-agent", a.Id,
-                            now < a.ErrorUntil ? PetState.Error : PetState.Working, a.Since));
+                        all.Add((new MiniInfo(a.Id, "subagent", a.Label ?? "sous-agent", a.Id,
+                            now < a.ErrorUntil ? PetState.Error : PetState.Working, a.Since), null));
                 if (v.State is { } state && v.Session.Id != _mainId)
-                    minis.Add(new MiniInfo(v.Session.Id, "session", FolderName(v.Session.Cwd) ?? "session",
-                        v.Session.Cwd ?? v.Session.Id, state, v.Session.ActiveSince));
+                    all.Add((new MiniInfo(v.Session.Id, "session", FolderName(v.Session.Cwd) ?? "session",
+                        v.Session.Cwd ?? v.Session.Id, state, v.Session.ActiveSince),
+                        state == PetState.WaitingUser ? v.Session.WaitSince : null));
             }
-            // les plus recents d'abord ; l'id departage, pour un ordre stable d'une image a l'autre
-            minis.Sort((x, y) =>
+            // les conversations en attente d'abord, la plus recente attente en tete : coupee de
+            // l'instantane, une attente n'aurait ni mini, ni etiquette, ni sonnerie, et c'est la
+            // derniere venue qui doit sonner. Puis les plus recents d'abord ; l'id departage, pour
+            // un ordre stable d'une image a l'autre
+            all.Sort((x, y) =>
             {
-                int c = y.Since.CompareTo(x.Since);
-                return c != 0 ? c : string.CompareOrdinal(x.Id, y.Id);
+                if (x.Wait.HasValue != y.Wait.HasValue) return x.Wait.HasValue ? -1 : 1;
+                int c = x.Wait is { } xw ? y.Wait!.Value.CompareTo(xw) : y.Info.Since.CompareTo(x.Info.Since);
+                return c != 0 ? c : string.CompareOrdinal(x.Info.Id, y.Info.Id);
             });
-            int overflow = Math.Max(0, minis.Count - MaxMinis);
-            if (overflow > 0) minis.RemoveRange(MaxMinis, overflow);
+            int overflow = Math.Max(0, all.Count - MaxMinis);
+            var minis = new List<MiniInfo>(Math.Min(all.Count, MaxMinis));
+            for (int i = 0; i < all.Count && i < MaxMinis; i++) minis.Add(all[i].Info);
 
             bool anyActive = views.Any(v => v.Active);
             if (main is not { } m)
@@ -410,11 +435,16 @@ public sealed class ActivityModel
     /// autorise qui tourne sans rien ecrire). Sans principale : l'attente fraiche la plus
     /// recente, sinon la plus recente des actives, avec la meme regle si elle attend depuis
     /// longtemps. Chaque changement est a sens unique : la session quittee ne remplit plus la
-    /// condition qui la ferait revenir, donc pas de va-et-vient d'une image a l'autre.
+    /// condition qui la ferait revenir, donc pas de va-et-vient d'une image a l'autre. Deux
+    /// regles le garantissent quand le changement vient du temps et non d'un evenement : une
+    /// session ne prend la place que si elle doit rester active au moins SuccessorMargin (sinon
+    /// elle la rendrait aussitot) ; une attente perimee qui a cede la place ne la reprend plus,
+    /// ni comme attente ni sans principale, tant que dure la meme attente : elle reste en mini.
     /// </summary>
     View? PickMain(List<View> views, DateTimeOffset now)
     {
         var freshSince = now - _o.FreshWaitWindow;
+        DropEndedYields();
         View? current = null;
         foreach (var v in views)
             if (v.Session.Id == _mainId && v.State != null) current = v;
@@ -422,10 +452,11 @@ public sealed class ActivityModel
         View? waiting = null;
         foreach (var v in views)
         {
-            if (v.State != PetState.WaitingUser || v.Session.Id == current?.Session.Id) continue;
+            if (v.State != PetState.WaitingUser || v.Session.Id == current?.Session.Id
+                || _yielded.ContainsKey(v.Session.Id) || !Lasts(v.Session, now)) continue;
             var since = v.Session.WaitSince;
             bool fresh = since >= freshSince
-                || (current is { } cur && since > cur.Session.LastEvent && Successor(views, v) == null);
+                || (current is { } cur && since > cur.Session.LastEvent && Successor(views, v, now) == null);
             if (fresh && (waiting is not { } w || since > w.Session.WaitSince)) waiting = v;
         }
 
@@ -433,32 +464,69 @@ public sealed class ActivityModel
         {
             if (c.State != PetState.WaitingUser) return waiting ?? c;
             if (c.Session.WaitSince >= freshSince) return c;
-            return waiting ?? Successor(views, c) ?? c;
+            return YieldTo(c, waiting ?? Successor(views, c, now));
         }
         if (waiting != null) return waiting;
 
         View? latest = null;
         foreach (var v in views)
-            if (v.Active && (latest is not { } l || v.Session.LastEvent > l.Session.LastEvent))
+            if (v.Active && !_yielded.ContainsKey(v.Session.Id)
+                && (latest is not { } l || v.Session.LastEvent > l.Session.LastEvent))
                 latest = v;
         if (latest is { } last && last.State == PetState.WaitingUser && last.Session.WaitSince < freshSince)
-            return Successor(views, last) ?? last;
+            return YieldTo(last, Successor(views, last, now));
         return latest;
+    }
+
+    /// <summary>La place va a next s'il existe, et l'attente w, qui la cede, est notee ; sinon w la garde.</summary>
+    View YieldTo(View w, View? next)
+    {
+        if (next is not { } n) return w;
+        _yielded[w.Session.Id] = w.Session.WaitSince;
+        return n;
+    }
+
+    /// <summary>Oublie les attentes cedees qui ont pris fin : session oubliee, attente levee ou remplacee par une autre.</summary>
+    void DropEndedYields()
+    {
+        if (_yielded.Count == 0) return;
+        List<string>? ended = null;
+        foreach (var (id, since) in _yielded)
+            if (!_sessions.TryGetValue(id, out var s) || s.Wait == Wait.None || s.WaitSince != since)
+                (ended ??= new()).Add(id);
+        if (ended != null) foreach (var id in ended) _yielded.Remove(id);
     }
 
     /// <summary>
     /// La plus recente des sessions actives hors attente qui se sont manifestees depuis le
-    /// debut de l'attente de w, ou null.
+    /// debut de l'attente de w et resteront actives au moins SuccessorMargin, ou null.
     /// </summary>
-    static View? Successor(List<View> views, View w)
+    View? Successor(List<View> views, View w, DateTimeOffset now)
     {
         View? best = null;
         foreach (var v in views)
             if (v.Active && v.State != PetState.WaitingUser && v.Session.Id != w.Session.Id
-                && v.Session.LastEvent > w.Session.WaitSince
+                && v.Session.LastEvent > w.Session.WaitSince && Lasts(v.Session, now)
                 && (best is not { } b || v.Session.LastEvent > b.Session.LastEvent))
                 best = v;
         return best;
+    }
+
+    /// <summary>Vrai si la session restera active au moins SuccessorMargin sans nouvel evenement.</summary>
+    bool Lasts(Session s, DateTimeOffset now) => ActiveUntil(s) >= now + _o.SuccessorMargin;
+
+    /// <summary>
+    /// Dernier instant ou la session est encore active sans nouvel evenement, avec les delais de
+    /// ViewOf : attente, tour du fil principal, et chacun de ses sous-agents actifs.
+    /// </summary>
+    DateTimeOffset ActiveUntil(Session s)
+    {
+        var until = DateTimeOffset.MinValue;
+        if (s.Wait != Wait.None) until = Later(until, s.WaitSince + WaitTimeout(s.Wait));
+        if (s.Busy) until = Later(until, s.LastMainActivity + _o.WorkingTimeout);
+        foreach (var a in s.Agents.Values)
+            if (a.Active) until = Later(until, a.LastEvent + (a.Tools.Count > 0 ? _o.SubagentTimeout : _o.WorkingTimeout));
+        return until;
     }
 
     static string? FolderName(string? cwd)

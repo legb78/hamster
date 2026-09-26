@@ -19,6 +19,7 @@ static class Program
         CrowdTests.Run();
         RenderTests.Run();
         LabelTests.Run();
+        HubTests.Run();
         AppTests.Run();
 
         Console.WriteLine();

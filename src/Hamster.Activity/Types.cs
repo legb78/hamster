@@ -81,6 +81,12 @@ public sealed class ActivityOptions
     /// </summary>
     public TimeSpan FreshWaitWindow { get; set; } = TimeSpan.FromMinutes(2);
     /// <summary>
+    /// Une session ne prend la place principale que si elle doit rester active au moins ce
+    /// delai sans nouvel evenement : successeur d'une attente perimee, ou attente qui redevient
+    /// la plus parlante. Sinon elle la rendrait aussitot, et la principale ferait un aller-retour.
+    /// </summary>
+    public TimeSpan SuccessorMargin { get; set; } = TimeSpan.FromSeconds(10);
+    /// <summary>
     /// Sous-agent muet depuis ce delai alors qu'un de ses outils est en suspens : il disparait.
     /// Sans outil en suspens, WorkingTimeout suffit (Claude Code ferme en plein travail).
     /// </summary>

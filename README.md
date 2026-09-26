@@ -21,7 +21,7 @@ Tests, sans fenêtre (applications console, code de sortie 1 au moindre échec) 
 
 ```powershell
 dotnet run --project tests\Hamster.Activity.Tests -c Release   # parseur, watchers, modèle, relecture des vrais transcripts
-dotnet run --project tests\Hamster.App.Tests -c Release        # directeur, minis, rendu, étiquettes, sonnerie, réglages, clé Run (valeurs HamsterTest)
+dotnet run --project tests\Hamster.App.Tests -c Release        # directeur, minis, rendu, étiquettes, sonnerie, hub, réglages, clé Run (valeurs HamsterTest)
 ```
 
 Le hamster est visible dès le lancement. Une seule instance par session : `run.ps1` arrête
@@ -45,7 +45,9 @@ hamster, à 50 %, dont le nœud prend une couleur stable (dérivée de l'id du s
 dossier de la session). Il apparaît dans un nuage de fumée, disparaît dans des étincelles et
 tourne autour des pieds du principal (un tour en 40 s), derrière lui sur l'arc arrière, devant
 sur l'arc avant. Un sous-agent garde la même scène de travail du début à la fin. Au-delà de
-six minis, un badge `+N` compte les autres.
+six minis, un badge `+N` compte les autres. Les conversations qui attendent ta réponse passent
+en tête, la plus récente attente d'abord, puis les plus récents : des sous-agents ne font jamais
+disparaître une attente du tableau.
 
 Pour que l'arc avant ne passe jamais devant le visage, le principal monte de 42 px (sprite)
 tant qu'il y a des minis : les minis de devant restent sous son museau. Vérifié au pixel sur
@@ -61,16 +63,23 @@ du principal ou de son mini, avec un cadre jaune ; survolée, celle d'un mini ga
 (plus longue, elle pourrait changer de place et fuir le curseur). Près du bord de l'écran, une
 étiquette glisse vers l'intérieur plutôt que d'être coupée : ses bords restent dans la zone de
 travail de l'écran du hamster. Une étiquette de mini tourne avec lui, mais ne se pose jamais sur le visage du
-principal ni sur une autre étiquette (elle monte alors au-dessus). Sur l'arc avant, elle passe
-à côté du visage, du côté du mini ; si la place manque de ce côté (principal poussé contre le
-bord de l'écran, nom long), elle se pose sous le visage, sur le mini lui-même, quitte à cacher
-une partie de celui-ci : de l'autre côté du principal, elle semblerait appartenir à un autre
-mini. Vérifié tout le tour de l'orbite, sur tous les clips du principal, miroir compris, aux
-trois échelles, au bord de l'écran et au milieu, par `Hamster.App.Tests`.
+principal ni sur une autre étiquette (elle monte alors au-dessus), et évite toute sa tête, bulle
+du téléphone et combiné compris (ses pixels opaques du haut jusqu'au bas du visage), tant que la
+place le permet. Si elle gêne, elle passe à côté de la tête, du côté du mini ; si la place manque
+de ce côté (principal poussé contre le bord de l'écran, nom long), elle se pose dessous, sur le
+mini lui-même, quitte à cacher une partie de celui-ci : de l'autre côté du principal, elle
+semblerait appartenir à un autre mini. Rien ne tient hors de la tête : mêmes règles autour du
+seul visage. Sa place se choisit sans le rebond du mini (±1 px sprite), qui ne fait que la
+décaler verticalement avec lui : elle ne saute pas d'un côté à l'autre au rythme du sautillement,
+et n'empiète sur le visage à aucun moment du rebond. Vérifié tout le tour de l'orbite (au quart
+de degré pour le rebond), sur tous les clips du principal, miroir compris, aux trois échelles,
+au bord de l'écran et au milieu, par `Hamster.App.Tests`.
 
 **Sons**, désactivés par défaut (menu → **Son**) : téléphone (`Windows Ringin.wav`) quand une
 conversation de plus se met à attendre ta réponse, la principale ou celle d'un mini ; une
-attente déjà annoncée ne resonne pas quand son mini prend la place principale. `tada.wav` en
+attente déjà annoncée ne resonne pas quand son mini prend la place principale, ni quand la fête
+de fin de tour (3 s) la masque un instant (demande d'un sous-agent pendant que le principal
+finit son tour). `tada.wav` en
 fin de tâche, `Windows Navigation Start.wav` à l'apparition d'un sous-agent, au plus un toutes
 les 10 s. Jamais en boucle, rien pendant les 3 s d'amorçage (les transcripts relus ne sont pas
 des nouveautés) ni tant que le hamster est en pause ou caché. Coupés quand Windows refuse les
@@ -221,18 +230,31 @@ si une mise à jour de Claude Code le change.
 
 ### Attentes, conversation principale et sous-agents
 
-- **Durée d'une attente.** Une attente née d'une demande d'autorisation (hook) expire après
-  10 min. Une question `AskUserQuestion`, lue dans le transcript, reste 1 h (le parseur range le
-  plan à valider, `ExitPlanMode`, avec elle).
+- **Durée d'une attente.** Une attente signalée par le hook (autorisation : `permission_prompt`
+  ou `worker_permission_prompt` ; `agent_needs_input`, `elicitation_dialog`,
+  `elicitation_url_dialog`) expire après 10 min ; une question `AskUserQuestion` ou un plan
+  `ExitPlanMode`, lus dans le transcript, restent 1 h. D'après le binaire de Claude Code 2.1.283
+  (déduction, non observée), ces deux dialogues émettent aussi une notification
+  `permission_prompt` quelques secondes après : pour le même fil, elle ne change rien, l'attente
+  garde son heure de début et son délai d'1 h.
 - **Place principale.** Une attente ne prend la place de la conversation principale que si elle a
   moins de 2 min, ou si elle est postérieure à la dernière activité de la principale. Une attente
-  périmée rend la place à une conversation active ; elle reste visible en mini, au téléphone,
-  avec son étiquette.
+  périmée rend la place à une attente fraîche, sinon à une conversation active qui s'est
+  manifestée depuis son début ; elle reste visible en mini, au téléphone, avec son étiquette, et
+  ne reprend pas la place tant que dure la même attente, même quand cette conversation s'arrête
+  (le principal se repose alors, le mini reste au téléphone). Une nouvelle demande de sa part,
+  ou sa réponse, la rend de nouveau candidate.
+  Une conversation ne prend la place, par l'effet du temps, que si elle doit rester active encore
+  10 s au moins sans rien écrire : pas d'aller-retour d'une image à l'autre.
+- **Priorité dans les minis.** Au-delà de six minis, les conversations en attente restent : elles
+  passent en tête, la plus récente d'abord, avant les sous-agents et les autres conversations.
 - **Conversation inconnue.** Une notification pour une conversation dont aucun transcript n'a
-  encore rien dit est ignorée.
+  encore rien dit est ignorée, et comptée dans l'état du hook de l'overlay de debug
+  (`N ignorees`).
 - **Sous-agents.** Un sous-agent sans outil en cours et muet depuis 3 min disparaît (Claude Code
   fermé en plein travail, par exemple) ; avec un outil en cours, il tient 30 min. Un sous-agent au
-  premier plan se termine quand son résultat arrive au fil principal.
+  premier plan se termine quand son résultat arrive au fil principal (le `tool_result` de l'outil
+  `Agent` qui l'a lancé), même si son propre transcript s'arrête sans fin de tour.
 - **Limite connue : le téléphone après une autorisation accordée.** Claude Code n'écrit rien
   quand tu accordes l'autorisation : la première ligne qui lève l'attente est le résultat de
   l'outil, écrit quand la commande a fini. Pendant l'exécution de la commande autorisée, le
@@ -240,8 +262,11 @@ si une mise à jour de Claude Code le change.
   signal de réponse.
 
 Garde-fous : une session qui travaille sans rien écrire pendant 3 min est considérée inactive
-(un outil unique plus long fait donc passer le hamster au repos jusqu'à son résultat) ; pour
-les attentes et les sous-agents, voir juste au-dessus (10 min, 1 h, 3 min, 30 min).
+(un outil unique plus long fait donc passer le hamster au repos jusqu'à son résultat) ; une
+session muette depuis 2 h est oubliée ; une ligne `api_error` datée d'avant la fin du tour mais
+écrite après elle (la relecture des vrais transcripts en compte) ne rouvre pas le tour. Pour les
+attentes, la place principale et les sous-agents, voir juste au-dessus (10 min, 1 h, 2 min, 10 s,
+3 min, 30 min).
 
 ## Coût mesuré
 

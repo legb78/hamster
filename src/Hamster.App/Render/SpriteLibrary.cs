@@ -21,8 +21,8 @@ internal sealed class RenderClip
     FaceBox?[]? _faces;
     bool[]? _facesDone;
     int? _topRow;
-    (int X0, int Y0, int X1, int Y1)? _faceBounds;
-    bool _faceBoundsDone;
+    (int X0, int Y0, int X1, int Y1)? _faceBounds, _headBounds;
+    bool _faceBoundsDone, _headBoundsDone;
 
     public int FrameCount => Frames.Length;
 
@@ -62,6 +62,34 @@ internal sealed class RenderClip
             _faceBounds = x1 < x0 ? null : (x0, y0, x1, y1);
             _faceBoundsDone = true;
             return _faceBounds;
+        }
+    }
+
+    /// <summary>
+    /// Rectangle des pixels opaques du clip, toutes frames, de la ligne du haut jusqu'au bas du
+    /// visage : la tete et ce qui l'entoure, bulle du telephone, combine, noeud, pattes levees.
+    /// Null sans visage. Les etiquettes des minis l'evitent quand la place le permet.
+    /// </summary>
+    public (int X0, int Y0, int X1, int Y1)? HeadBounds
+    {
+        get
+        {
+            if (_headBoundsDone) return _headBounds;
+            _headBoundsDone = true;
+            if (FaceBounds is not { } face) return _headBounds = null;
+            int n = PixelCanvas.Size;
+            int x0 = int.MaxValue, y0 = int.MaxValue, x1 = int.MinValue, y1 = int.MinValue;
+            foreach (var frame in Frames)
+                for (int y = 0; y <= face.Y1 && y < n; y++)
+                for (int x = 0; x < n; x++)
+                {
+                    if (frame[y * n + x] == 0) continue;
+                    if (x < x0) x0 = x;
+                    if (x > x1) x1 = x;
+                    if (y < y0) y0 = y;
+                    if (y > y1) y1 = y;
+                }
+            return _headBounds = (Math.Min(x0, face.X0), Math.Min(y0, face.Y0), Math.Max(x1, face.X1), Math.Max(y1, face.Y1));
         }
     }
 
