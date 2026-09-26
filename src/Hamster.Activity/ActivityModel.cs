@@ -1,0 +1,396 @@
+namespace Hamster.Activity;
+
+/// <summary>
+/// Machine a etats des sessions Claude Code. Aucune horloge systeme : le temps vient des
+/// evenements et du parametre now de Snapshot, ce qui rend chaque regle testable.
+/// Apply et Snapshot peuvent etre appeles depuis des threads differents (verrou interne).
+/// </summary>
+public sealed class ActivityModel
+{
+    /// <summary>Plafond de minis a l'ecran ; le reste est compte dans MinisOverflow.</summary>
+    public const int MaxMinis = 6;
+
+    // cle du fil principal d'une session ; les sous-agents sont designes par leur agentId
+    const string MainThread = "";
+
+    readonly ActivityOptions _o;
+    readonly object _gate = new();
+    readonly Dictionary<string, Session> _sessions = new(StringComparer.Ordinal);
+    string? _mainId;
+
+    public ActivityModel(ActivityOptions? options = null)
+    {
+        _o = options ?? new ActivityOptions();
+    }
+
+    enum Wait { None, Asked, Needs }
+
+    sealed record Pending(string? Id, string Name, DateTimeOffset Since);
+
+    sealed class Agent(string id)
+    {
+        public readonly string Id = id;
+        public string? Label;
+        public bool Active;
+        public DateTimeOffset Since, LastEvent;
+        public DateTimeOffset? EndedAt;
+        public DateTimeOffset ErrorUntil;
+        public readonly List<Pending> Tools = new();
+    }
+
+    sealed class Session(string id)
+    {
+        public readonly string Id = id;
+        public string? Cwd;
+        /// <summary>Tout evenement, sous-agents et hook compris : sert a oublier la session.</summary>
+        public DateTimeOffset LastEvent;
+        /// <summary>Evenements du fil principal seulement : sert au garde-fou WorkingTimeout.</summary>
+        public DateTimeOffset LastMainActivity;
+        /// <summary>Un tour est en cours sur le fil principal.</summary>
+        public bool Busy;
+        public DateTimeOffset TurnStart;
+        public int TurnTools;
+        public DateTimeOffset ActiveSince;
+        public Wait Wait;
+        public DateTimeOffset WaitSince;
+        /// <summary>Fil dont on attend le prochain evenement pour lever l'attente ; null = n'importe lequel.</summary>
+        public string? WaitThread;
+        public DateTimeOffset ErrorUntil, CelebrateUntil;
+        public readonly List<Pending> Tools = new();
+        public readonly Dictionary<string, Agent> Agents = new(StringComparer.Ordinal);
+    }
+
+    public void Apply(ActivityEvent e)
+    {
+        if (e is null || string.IsNullOrEmpty(e.SessionId)) return;
+        lock (_gate)
+        {
+            if (!_sessions.TryGetValue(e.SessionId, out var s))
+            {
+                // une fin de tache seule (Bash de fond, agent deja oublie) ne fait pas exister une session
+                if (e.Kind == ActivityKind.SubagentEnded) return;
+                s = new Session(e.SessionId);
+                _sessions.Add(e.SessionId, s);
+            }
+            // apres un long silence, la session repart de zero meme si un tour etait reste ouvert
+            bool wasEngaged = Engaged(s) && e.Time - s.LastEvent <= _o.WorkingTimeout;
+            if (e.Time > s.LastEvent) s.LastEvent = e.Time;
+
+            if (e.Kind == ActivityKind.NeedsUser) OnNeedsUser(s, e);
+            else
+            {
+                bool wasWaiting = s.Wait != Wait.None;
+                ClearAnsweredWait(s, e);
+                if (e.AgentId != null) OnAgentEvent(s, e);
+                else OnMainEvent(s, e, wasWaiting);
+            }
+            // debut d'une periode d'activite : c'est l'age du mini de cette session
+            if (!wasEngaged && Engaged(s)) s.ActiveSince = e.Time;
+        }
+    }
+
+    /// <summary>Activite sans tenir compte des delais : tour en cours, attente ou sous-agent.</summary>
+    static bool Engaged(Session s) => s.Busy || s.Wait != Wait.None || s.Agents.Values.Any(a => a.Active);
+
+    /// <summary>
+    /// La notification ne dit pas quel fil attend (pas d'agent_id pour Notification dans la
+    /// version observee) : on prend celui dont l'outil en suspens a demarre le plus
+    /// recemment, puisque la demande d'autorisation suit de pres le tool_use qu'elle bloque.
+    /// Sans cela, un sous-agent de fond qui travaille leverait l'attente aussitot.
+    /// </summary>
+    void OnNeedsUser(Session s, ActivityEvent e)
+    {
+        s.Wait = Wait.Needs;
+        s.WaitSince = e.Time;
+        s.WaitThread = e.AgentId ?? BlockedThread(s, e.Time);
+        if (s.Cwd == null && e.Cwd != null) s.Cwd = e.Cwd;
+    }
+
+    static string? BlockedThread(Session s, DateTimeOffset at)
+    {
+        string? best = null;
+        DateTimeOffset bestTime = DateTimeOffset.MinValue;
+        foreach (var p in s.Tools)
+            if (p.Since <= at && p.Since > bestTime) { best = MainThread; bestTime = p.Since; }
+        foreach (var a in s.Agents.Values)
+        {
+            if (!a.Active) continue;
+            foreach (var p in a.Tools)
+                if (p.Since <= at && p.Since > bestTime) { best = a.Id; bestTime = p.Since; }
+        }
+        return best;
+    }
+
+    void ClearAnsweredWait(Session s, ActivityEvent e)
+    {
+        string thread = e.AgentId ?? MainThread;
+        switch (s.Wait)
+        {
+            case Wait.Asked:
+                // la reponse arrive en tool_result sur le fil qui a pose la question. Un autre
+                // tool_use du meme message (appels paralleles) ne vaut pas reponse
+                if (thread == s.WaitThread && e.Time >= s.WaitSince
+                    && e.Kind is not (ActivityKind.ToolStarted or ActivityKind.AskedUser))
+                    s.Wait = Wait.None;
+                break;
+            case Wait.Needs:
+                // seul un evenement de transcript posterieur a la notification compte : les lignes
+                // ecrites avant, mais lues apres, ne disent rien de la reponse
+                if (e.Time > s.WaitSince
+                    && (s.WaitThread == null || thread == s.WaitThread
+                        || (thread == MainThread && e.Kind == ActivityKind.PromptSubmitted)))
+                    s.Wait = Wait.None;
+                break;
+        }
+    }
+
+    void OnMainEvent(Session s, ActivityEvent e, bool wasWaiting)
+    {
+        if (e.Cwd != null) s.Cwd = e.Cwd;
+        var t = e.Time;
+        switch (e.Kind)
+        {
+            case ActivityKind.PromptSubmitted:
+            case ActivityKind.SessionActivity:
+                BeginWork(s, t, e.Kind, wasWaiting);
+                break;
+            case ActivityKind.ToolStarted:
+                BeginWork(s, t, e.Kind, wasWaiting);
+                s.TurnTools++;
+                s.Tools.Add(new Pending(e.Detail, e.ToolName ?? "?", t));
+                break;
+            case ActivityKind.AskedUser:
+                BeginWork(s, t, e.Kind, wasWaiting);
+                s.Tools.Add(new Pending(e.Detail, e.ToolName ?? "?", t));
+                s.Wait = Wait.Asked;
+                s.WaitSince = t;
+                s.WaitThread = MainThread;
+                break;
+            case ActivityKind.ToolFinished:
+                BeginWork(s, t, e.Kind, wasWaiting);
+                Finish(s.Tools, e.Detail);
+                if (e.IsError) s.ErrorUntil = Later(s.ErrorUntil, t + _o.ErrorDuration);
+                break;
+            case ActivityKind.ApiError:
+                BeginWork(s, t, e.Kind, wasWaiting);
+                s.ErrorUntil = Later(s.ErrorUntil, t + _o.ErrorDuration);
+                break;
+            case ActivityKind.TurnEnded:
+                EndTurn(s, e);
+                break;
+            default:
+                // SubagentActivity / SubagentEnded sans agentId : rien a rattacher
+                return;
+        }
+        if (t > s.LastMainActivity) s.LastMainActivity = t;
+    }
+
+    void BeginWork(Session s, DateTimeOffset t, ActivityKind kind, bool wasWaiting)
+    {
+        // un nouveau prompt apres un tour reste ouvert et muet (Claude Code tue, fin jamais ecrite)
+        // ouvre un nouveau tour ; un resultat d'outil tardif, lui, continue le tour en cours
+        bool stale = s.Busy && kind == ActivityKind.PromptSubmitted && !wasWaiting
+                     && t - s.LastMainActivity > _o.WorkingTimeout;
+        if (s.Busy && !stale) return;
+        s.Busy = true;
+        s.TurnStart = t;
+        s.TurnTools = 0;
+        if (stale) s.Tools.Clear();
+    }
+
+    void EndTurn(Session s, ActivityEvent e)
+    {
+        // deuxieme fin du meme message (bloc thinking puis bloc text, tous deux en end_turn)
+        if (!s.Busy) return;
+        bool normal = e.Detail == null;
+        if (normal && (s.TurnTools > 0 || e.Time - s.TurnStart >= _o.MinTurnForCelebration))
+            s.CelebrateUntil = Later(s.CelebrateUntil, e.Time + _o.CelebrateDuration);
+        s.Busy = false;
+        s.Tools.Clear();
+        if (s.Wait == Wait.Asked) s.Wait = Wait.None;
+    }
+
+    void OnAgentEvent(Session s, ActivityEvent e)
+    {
+        string id = e.AgentId!;
+        s.Agents.TryGetValue(id, out var a);
+        var t = e.Time;
+        if (e.Kind is ActivityKind.SubagentEnded or ActivityKind.TurnEnded)
+        {
+            if (a != null) End(a, t);
+            return;
+        }
+        if (a == null)
+        {
+            a = new Agent(id);
+            s.Agents.Add(id, a);
+        }
+        if (t > a.LastEvent) a.LastEvent = t;
+        if (e.Kind == ActivityKind.SubagentActivity && !string.IsNullOrWhiteSpace(e.Detail)) a.Label = e.Detail;
+
+        // une ligne anterieure a la fin connue, lue apres elle depuis un autre fichier (la
+        // task-notification du parent passe parfois avant la derniere ligne de l'agent),
+        // ne ressuscite pas l'agent
+        if (a.EndedAt is { } ended && t <= ended) return;
+        if (!a.Active)
+        {
+            a.Active = true;
+            a.Since = t;
+            a.EndedAt = null;
+        }
+        switch (e.Kind)
+        {
+            case ActivityKind.ToolStarted:
+            case ActivityKind.AskedUser:
+                a.Tools.Add(new Pending(e.Detail, e.ToolName ?? "?", t));
+                break;
+            case ActivityKind.ToolFinished:
+                string? name = Finish(a.Tools, e.Detail);
+                if (e.IsError) a.ErrorUntil = Later(a.ErrorUntil, t + _o.ErrorDuration);
+                // les agents de workflow finissent sur le resultat de StructuredOutput, sans end_turn
+                else if (name == "StructuredOutput") End(a, t);
+                break;
+            case ActivityKind.ApiError:
+                a.ErrorUntil = Later(a.ErrorUntil, t + _o.ErrorDuration);
+                break;
+        }
+    }
+
+    static void End(Agent a, DateTimeOffset t)
+    {
+        a.Active = false;
+        a.Tools.Clear();
+        if (a.EndedAt is not { } ended || t > ended) a.EndedAt = t;
+        if (t > a.LastEvent) a.LastEvent = t;
+    }
+
+    /// <summary>Retire l'outil fini ; sans id, le plus ancien. Rend son nom.</summary>
+    static string? Finish(List<Pending> tools, string? id)
+    {
+        int i = id == null ? (tools.Count > 0 ? 0 : -1) : tools.FindIndex(p => p.Id == id);
+        if (i < 0) return null;
+        string name = tools[i].Name;
+        tools.RemoveAt(i);
+        return name;
+    }
+
+    static DateTimeOffset Later(DateTimeOffset a, DateTimeOffset b) => a > b ? a : b;
+
+    /// <summary>Vue calculee d'une session a l'instant now. State null = inactive.</summary>
+    readonly record struct View(Session Session, PetState? State, bool Active);
+
+    public ActivitySnapshot Snapshot(DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            Forget(now);
+            var views = new List<View>(_sessions.Count);
+            foreach (var s in _sessions.Values) views.Add(ViewOf(s, now));
+
+            var main = PickMain(views);
+            _mainId = main?.Session.Id;
+
+            var minis = new List<MiniInfo>();
+            foreach (var v in views)
+            {
+                foreach (var a in v.Session.Agents.Values)
+                    if (AgentActive(a, now))
+                        minis.Add(new MiniInfo(a.Id, "subagent", a.Label ?? "sous-agent", a.Id,
+                            now < a.ErrorUntil ? PetState.Error : PetState.Working, a.Since));
+                if (v.State is { } state && v.Session.Id != _mainId)
+                    minis.Add(new MiniInfo(v.Session.Id, "session", FolderName(v.Session.Cwd) ?? "session",
+                        v.Session.Cwd ?? v.Session.Id, state, v.Session.ActiveSince));
+            }
+            // les plus recents d'abord ; l'id departage, pour un ordre stable d'une image a l'autre
+            minis.Sort((x, y) =>
+            {
+                int c = y.Since.CompareTo(x.Since);
+                return c != 0 ? c : string.CompareOrdinal(x.Id, y.Id);
+            });
+            int overflow = Math.Max(0, minis.Count - MaxMinis);
+            if (overflow > 0) minis.RemoveRange(MaxMinis, overflow);
+
+            bool anyActive = views.Any(v => v.Active);
+            if (main is not { } m)
+                return new ActivitySnapshot(PetState.Idle, null, null, null, anyActive, minis, overflow);
+
+            var ms = m.Session;
+            string? tool = ms.Busy && ms.Tools.Count > 0 ? ms.Tools[^1].Name : null;
+            return new ActivitySnapshot(m.State ?? PetState.Idle, ms.Id, FolderName(ms.Cwd), tool, anyActive, minis, overflow);
+        }
+    }
+
+    void Forget(DateTimeOffset now)
+    {
+        List<string>? gone = null;
+        foreach (var s in _sessions.Values)
+        {
+            if (now - s.LastEvent > _o.ForgetAfter)
+            {
+                (gone ??= new()).Add(s.Id);
+                continue;
+            }
+            if (s.Wait != Wait.None && now - s.WaitSince > _o.WaitingTimeout) s.Wait = Wait.None;
+            List<string>? oldAgents = null;
+            foreach (var a in s.Agents.Values)
+                if (now - a.LastEvent > _o.ForgetAfter) (oldAgents ??= new()).Add(a.Id);
+            if (oldAgents != null) foreach (var id in oldAgents) s.Agents.Remove(id);
+        }
+        if (gone != null) foreach (var id in gone) _sessions.Remove(id);
+    }
+
+    bool AgentActive(Agent a, DateTimeOffset now) => a.Active && now - a.LastEvent <= _o.SubagentTimeout;
+
+    View ViewOf(Session s, DateTimeOffset now)
+    {
+        bool agents = s.Agents.Values.Any(a => AgentActive(a, now));
+        bool working = s.Busy && now - s.LastMainActivity <= _o.WorkingTimeout;
+        bool waiting = s.Wait != Wait.None && now - s.WaitSince <= _o.WaitingTimeout;
+        bool active = waiting || working || agents;
+
+        PetState? state =
+            now < s.CelebrateUntil ? PetState.Celebrating
+            : waiting ? PetState.WaitingUser
+            : now < s.ErrorUntil ? PetState.Error
+            : working || agents ? PetState.Working
+            : null;
+        return new View(s, state, active);
+    }
+
+    /// <summary>
+    /// Session principale collante : on la garde tant qu'elle est active ou dans un transitoire,
+    /// sauf si une autre attend l'utilisateur et pas elle. Sinon la plus recente des actives.
+    /// </summary>
+    View? PickMain(List<View> views)
+    {
+        View? current = null;
+        foreach (var v in views)
+            if (v.Session.Id == _mainId && v.State != null) current = v;
+
+        View? waiting = null;
+        foreach (var v in views)
+            if (v.State == PetState.WaitingUser && v.Session.Id != current?.Session.Id
+                && (waiting is not { } w || v.Session.WaitSince > w.Session.WaitSince))
+                waiting = v;
+
+        if (current is { } c)
+            return c.State != PetState.WaitingUser && waiting != null ? waiting : c;
+        if (waiting != null) return waiting;
+
+        View? latest = null;
+        foreach (var v in views)
+            if (v.Active && (latest is not { } l || v.Session.LastEvent > l.Session.LastEvent))
+                latest = v;
+        return latest;
+    }
+
+    static string? FolderName(string? cwd)
+    {
+        if (string.IsNullOrWhiteSpace(cwd)) return null;
+        string trimmed = cwd.TrimEnd('\\', '/');
+        if (trimmed.Length == 0) return cwd;
+        int cut = trimmed.LastIndexOfAny(new[] { '\\', '/' });
+        string name = cut >= 0 ? trimmed[(cut + 1)..] : trimmed;
+        return name.Length > 0 ? name : trimmed;
+    }
+}

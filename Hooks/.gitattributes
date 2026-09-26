@@ -1,0 +1,2 @@
+# sh lit un \r comme faisant partie de la commande : le script reste en LF, meme sous Windows
+*.sh text eol=lf
