@@ -35,6 +35,7 @@ internal sealed class PetController : IDisposable
     readonly MiniCrowd _crowd;
     readonly Compositor _comp = new();
     readonly Sounds _sounds;
+    readonly WaitingBell _bell = new();
     readonly PetMotion _motion = new();
     readonly LayeredSurface _surface = new();
     readonly PetWindow _window = new();
@@ -137,12 +138,17 @@ internal sealed class PetController : IDisposable
         bool quiet = Suspended || double.IsNaN(_hubStartedAt) || now - _hubStartedAt < QuietStartSeconds;
         _snapshot = next;
         var born = _crowd.Sync(next.Minis, next.MinisOverflow, now, animate: !Suspended);
+        // mis a jour meme en silence : une attente vue pendant l'amorcage ne sonne pas apres
+        var joined = _bell.Update(next);
+        if (joined.Count > 0)
+            Diagnostics.Info("nouvelle attente: " + string.Join(", ", joined.Select(id => WaitingName(next, id)))
+                + (quiet ? " (sans sonnerie)" : ""));
 
         if (!quiet)
         {
-            if (next.State == PetState.WaitingUser
-                && (previous.State != PetState.WaitingUser || previous.MainSessionId != next.MainSessionId))
-                _sounds.PlayPhone();
+            // une conversation de plus attend, principale ou mini : les memes regles qu'avant
+            // (Son coche, notifications acceptees), mais plus seulement pour la principale
+            if (joined.Count > 0) _sounds.PlayPhone();
             if (next.State == PetState.Celebrating && previous.State != PetState.Celebrating) _sounds.PlayDone();
             if (born.Any(m => m.Kind == "subagent")) _sounds.PlayPop();
         }
@@ -151,6 +157,12 @@ internal sealed class PetController : IDisposable
         bool changed = previous.State != next.State || previous.Tool != next.Tool
                        || previous.MainSessionId != next.MainSessionId || !SameMinis(previous.Minis, next.Minis);
         if (changed && !Suspended) Tick();
+    }
+
+    static string WaitingName(ActivitySnapshot s, string id)
+    {
+        string label = id == s.MainSessionId ? s.MainLabel ?? "?" : s.Minis.FirstOrDefault(m => m.Id == id)?.Label ?? "?";
+        return $"{label} (session {(id.Length > 8 ? id[..8] : id)}{(id == s.MainSessionId ? ", principale" : "")})";
     }
 
     static bool SameMinis(IReadOnlyList<MiniInfo> a, IReadOnlyList<MiniInfo> b)
@@ -286,7 +298,12 @@ internal sealed class PetController : IDisposable
 
         // ---- etiquettes et overlay, en pixels ecran ----
         int spriteW = w * s, spriteH = h * s;
-        var labels = BuildLabels(places, mainLeft, mainTop, s);
+        // le tampon agrandi est centre sur le principal : les bords de l'ecran, dans ses
+        // coordonnees, tiennent donc sans connaitre encore la taille de la fenetre
+        int spriteLeft = CenterScreenX() - spriteW / 2;
+        var area = _screen.WorkingArea;
+        var labels = BuildLabels(places, mainLeft, mainTop, s, LabelLayout.FaceRect(mainClip, mainMirror, mainLeft, mainTop, s),
+            area.Left - spriteLeft, area.Right - spriteLeft, spriteH);
         int minX = 0, maxX = spriteW, minY = 0;
         foreach (var l in labels)
         {
@@ -362,41 +379,58 @@ internal sealed class PetController : IDisposable
     // ---- etiquettes --------------------------------------------------------
 
     /// <summary>
-    /// Etiquettes a afficher, en pixels ecran relatifs au tampon sprite agrandi. Le principal en
-    /// attente porte en permanence le nom de sa conversation : c'est celle qui a besoin de toi.
-    /// Au survol, celle du hamster survole.
+    /// Etiquettes a afficher, en pixels ecran relatifs au tampon sprite agrandi. Une conversation
+    /// en attente porte en permanence son nom, qu'elle soit la principale ou un mini : c'est
+    /// celle qui a besoin de toi. Au survol, celle du hamster survole. Toutes restent entre
+    /// minX et maxX (le bord de l'ecran) ; celles des minis evitent le visage du principal et
+    /// les etiquettes deja posees (LabelLayout).
     /// </summary>
-    List<LabelBox> BuildLabels(List<MiniPlace> places, int mainLeft, int mainTop, int s)
+    List<LabelBox> BuildLabels(List<MiniPlace> places, int mainLeft, int mainTop, int s, Rectangle? face,
+        int minX, int maxX, int maxY)
     {
         var result = new List<LabelBox>();
+        var placed = new List<Rectangle>();
         int mainCenter = (mainLeft + Sprite / 2) * s;
         int mainHead = (mainTop + _animator.Current.TopRow) * s;
 
-        if (_hover == MainId)
-            result.Add(MakeLabel(MainId, MainHoverText(), mainCenter, mainHead, _snapshot.State == PetState.WaitingUser));
-        else if (_snapshot.State == PetState.WaitingUser)
-            result.Add(MakeLabel(MainId, _snapshot.MainLabel ?? "Claude Code", mainCenter, mainHead, alert: true));
-
-        if (_hover is { } id && id != MainId)
+        bool mainWaiting = _snapshot.State == PetState.WaitingUser;
+        string? mainText = _hover == MainId ? MainHoverText() : mainWaiting ? _snapshot.MainLabel ?? "Claude Code" : null;
+        if (mainText != null)
         {
-            foreach (var p in places)
-            {
-                if (p.Mini.Id != id || !p.Mini.ShowsBody) continue;
-                int top = p.Feet - SpriteLibrary.MiniBaseline + p.Mini.Body.Current.TopRow / 2;
-                result.Add(MakeLabel(id, MiniHoverText(p.Mini), p.X * s, top * s, p.Mini.State == PetState.WaitingUser));
-                break;
-            }
+            mainText = Fit(mainText);
+            var rect = LabelLayout.KeepInside(LabelLayout.Above(mainCenter, mainHead, LabelSize(mainText)), minX, maxX);
+            result.Add(new LabelBox(MainId, mainText, rect, mainWaiting));
+            placed.Add(rect);
+        }
+
+        // du plus proche au plus loin, dans un ordre qui ne depend pas du survol : survoler une
+        // etiquette ne doit pas la deplacer, sinon elle fuirait sous le curseur
+        for (int i = places.Count - 1; i >= 0; i--)
+        {
+            var m = places[i].Mini;
+            if (!m.ShowsBody) continue;
+            bool hovered = _hover == m.Id;
+            bool waiting = m.Kind == "session" && m.State == PetState.WaitingUser;
+            if (!hovered && !waiting) continue;
+            // en attente, le meme texte survole ou non : plus large, l'etiquette pourrait changer
+            // de place (bord de l'ecran, visage) et quitter le curseur, qui la ferait revenir
+            string text = Fit(waiting ? m.Label : MiniHoverText(m));
+            int top = places[i].Feet - SpriteLibrary.MiniBaseline + m.Body.Current.TopRow / 2;
+            var wanted = LabelLayout.Above(places[i].X * s, top * s, LabelSize(text));
+            var rect = LabelLayout.Place(wanted, face, placed, minX, maxX, maxY);
+            result.Add(new LabelBox(m.Id, text, rect, m.State == PetState.WaitingUser));
+            placed.Add(rect);
         }
         return result;
     }
 
-    LabelBox MakeLabel(string owner, string text, int centerX, int headTop, bool alert)
+    static string Fit(string text) => text.Length > LabelMaxChars ? text[..(LabelMaxChars - 3)] + "..." : text;
+
+    /// <summary>Taille de l'etiquette, cadre compris, en pixels ecran : lisible a 1x comme a 3x.</summary>
+    Size LabelSize(string text)
     {
-        if (text.Length > LabelMaxChars) text = text[..(LabelMaxChars - 3)] + "...";
         var size = MeasureLabel(text);
-        int bw = (int)Math.Ceiling(size.Width) + 10, bh = (int)Math.Ceiling(size.Height) + 4;
-        // un petit ecart au-dessus de la tete, mesure en pixels ecran pour rester lisible a 1x
-        return new LabelBox(owner, text, new Rectangle(centerX - bw / 2, headTop - bh - 4, bw, bh), alert);
+        return new Size((int)Math.Ceiling(size.Width) + 10, (int)Math.Ceiling(size.Height) + 4);
     }
 
     string MainHoverText()

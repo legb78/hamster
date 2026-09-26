@@ -11,8 +11,16 @@ namespace Hamster.App;
 internal sealed class StartupRegistration
 {
     public const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    /// <summary>Une entree desactivee dans le Gestionnaire des taches laisse ici une valeur qui la fait sauter.</summary>
+    /// <summary>
+    /// Ce que le Gestionnaire des taches retient de chaque entree Run : une valeur binaire de
+    /// meme nom, non documentee. Sur le poste de developpement, 12 octets dont le premier vaut
+    /// 0x02 pour une entree active et 0x03 pour une entree desactivee (suivi, le plus souvent,
+    /// de ce qui se lit comme une date FILETIME) ; aucune autre valeur n'y a ete vue. Absente,
+    /// l'entree est active.
+    /// </summary>
     public const string ApprovedKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    /// <summary>Premier octet d'une entree desactivee dans le Gestionnaire des taches.</summary>
+    public const byte ApprovedDisabled = 0x03;
     public const string DefaultValueName = "Hamster";
 
     public StartupRegistration(string? valueName = null, string? exePath = null)
@@ -37,9 +45,27 @@ internal sealed class StartupRegistration
         }
     }
 
-    public bool IsEnabled => CurrentValue != null;
+    /// <summary>
+    /// Vrai si le Gestionnaire des taches a desactive l'entree : Explorer saute alors la valeur
+    /// Run a l'ouverture de session. Seul le 0x03 observe compte : une autre valeur, qu'on n'a
+    /// jamais vue, n'est pas prise pour une desactivation.
+    /// </summary>
+    public bool DisabledByTaskManager
+    {
+        get
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(ApprovedKeyPath);
+            return key?.GetValue(ValueName) is byte[] { Length: > 0 } flags && flags[0] == ApprovedDisabled;
+        }
+    }
 
-    /// <summary>Ce que fait le clic : active si absent, retire sinon. Rend le nouvel etat.</summary>
+    /// <summary>Le hamster se lancera a l'ouverture de session : la valeur Run existe et n'est pas desactivee.</summary>
+    public bool IsEnabled => CurrentValue != null && !DisabledByTaskManager;
+
+    /// <summary>
+    /// Ce que fait le clic : active si le demarrage n'aurait pas lieu (valeur absente, ou
+    /// desactivee dans le Gestionnaire des taches), retire sinon. Rend le nouvel etat.
+    /// </summary>
     public bool Toggle()
     {
         if (IsEnabled) Disable();

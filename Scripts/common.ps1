@@ -28,7 +28,25 @@ function Stop-Hamster {
     }
 }
 
-# Une entree desactivee dans le Gestionnaire des taches laisse une valeur ici, et
-# Explorer saute alors la cle Run a l'ouverture de session.
+# Le Gestionnaire des taches y garde une valeur binaire par entree Run, non documentee :
+# premier octet 0x02 active, 0x03 desactivee (Explorer saute alors la valeur Run a
+# l'ouverture de session), d'apres les valeurs lues sur le poste de developpement.
 $StartupApprovedKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+
+# Ce que le hamster et son hook ecrivent dans ~/.hamster : le script depose au lancement
+# (et son fichier temporaire d'ecriture), les notifications recopiees et leur rotation.
+$HamsterDataFiles = @("hook.sh", "hook.sh.tmp", "events.jsonl", "events.jsonl.1")
+
+# Supprime ces fichiers, puis le dossier s'il est vide. Un fichier ajoute a la main
+# dans le dossier est laisse, et le dossier avec lui. Rend ce qui reste.
+function Remove-HamsterData([string]$Dir) {
+    if (-not (Test-Path -LiteralPath $Dir)) { return @() }
+    foreach ($name in $HamsterDataFiles) {
+        $path = Join-Path $Dir $name
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    }
+    $left = @(Get-ChildItem -LiteralPath $Dir -Force)
+    if ($left.Count -eq 0) { Remove-Item -LiteralPath $Dir -Force }
+    return $left
+}

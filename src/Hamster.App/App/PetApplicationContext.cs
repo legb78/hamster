@@ -187,7 +187,8 @@ internal sealed class PetApplicationContext : ApplicationContext
         _claudeItem.Checked = _settings.OnlyWithClaudeDesktop;
         _soundItem.Checked = _settings.SoundEnabled;
         _debugItem.Checked = _settings.DebugOverlay;
-        // relu a chaque ouverture : l'entree peut avoir ete retiree ailleurs (uninstall.ps1)
+        // relu a chaque ouverture : l'entree peut avoir ete retiree (uninstall.ps1) ou
+        // desactivee (Gestionnaire des taches) ailleurs
         try { _startupItem.Checked = _startup.IsEnabled; }
         catch (Exception e) { Diagnostics.Warn("lecture de la cle Run: " + e.Message); }
         foreach (var (item, value) in _scaleItems) item.Checked = _settings.Scale == value;
@@ -200,7 +201,8 @@ internal sealed class PetApplicationContext : ApplicationContext
         try
         {
             bool on = _startup.Toggle();
-            Diagnostics.Info($"lancer au demarrage: {(on ? "active" : "retire")} ({_startup.ValueName} = {_startup.CurrentValue ?? "absent"})");
+            Diagnostics.Info($"lancer au demarrage: {(on ? "active" : "retire")} ({_startup.ValueName} = {_startup.CurrentValue ?? "absent"}" +
+                (_startup.DisabledByTaskManager ? ", desactive dans le Gestionnaire des taches" : "") + ")");
         }
         catch (Exception e)
         {
