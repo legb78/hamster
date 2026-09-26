@@ -14,6 +14,8 @@ internal sealed class PetApplicationContext : ApplicationContext
 
     readonly Settings _settings;
     readonly PetController _controller;
+    readonly ActivityHub _hub;
+    readonly StartupRegistration _startup = new();
     readonly NotifyIcon _tray;
     readonly ContextMenuStrip _menu;
     readonly RegisteredWaitHandle _quitWait;
@@ -28,7 +30,10 @@ internal sealed class PetApplicationContext : ApplicationContext
     ToolStripSeparator _waitingSeparator = null!;
     ToolStripMenuItem _pauseItem = null!;
     ToolStripMenuItem _claudeItem = null!;
+    ToolStripMenuItem _startupItem = null!;
+    ToolStripMenuItem _soundItem = null!;
     ToolStripMenuItem _debugItem = null!;
+    readonly List<(ToolStripMenuItem Item, int Value)> _chillItems = new();
     // sans effet visible tant que le hamster est cache : grises pendant l'attente
     readonly List<ToolStripItem> _petOnlyItems = new();
     readonly List<(ToolStripMenuItem Item, int Value)> _scaleItems = new();
@@ -56,6 +61,11 @@ internal sealed class PetApplicationContext : ApplicationContext
         _controller.ClaudePresenceChanged += _ => UpdateTrayText();
         _controller.Start();
         UpdateTrayText();
+
+        // apres Start : la fenetre a son handle, le hub peut y renvoyer ses lots
+        _hub = new ActivityHub(_controller.Window);
+        _controller.Attach(_hub);
+        _hub.Start();
         if (_settings.LoadError != null) ShowUnreadable(_settings.LoadError, _settings.LoadBackedUp);
         if (ShowTrayMenu == null) Diagnostics.Warn("NotifyIcon.ShowContextMenu introuvable, repli sur Menu.Show");
 
@@ -112,6 +122,10 @@ internal sealed class PetApplicationContext : ApplicationContext
         _claudeItem = new ToolStripMenuItem("Seulement avec Claude Desktop", null, (_, _) =>
             _controller.SetOnlyWithClaudeDesktop(!_settings.OnlyWithClaudeDesktop)) { CheckOnClick = false };
         menu.Items.Add(_claudeItem);
+
+        // la valeur Run n'est ecrite ou retiree qu'ici, au clic : jamais au lancement
+        _startupItem = new ToolStripMenuItem("Lancer au demarrage", null, (_, _) => ToggleStartup()) { CheckOnClick = false };
+        menu.Items.Add(_startupItem);
         menu.Items.Add(new ToolStripSeparator());
 
         var size = new ToolStripMenuItem("Taille");
@@ -133,6 +147,18 @@ internal sealed class PetApplicationContext : ApplicationContext
         }
         menu.Items.Add(opacity);
         _petOnlyItems.Add(opacity);
+
+        var chill = new ToolStripMenuItem("Delai avant le mode chill");
+        foreach (int d in new[] { 5, 10, 30, 60 })
+        {
+            var item = new ToolStripMenuItem($"{d} s", null, (_, _) => _controller.ApplyChillDelay(d));
+            _chillItems.Add((item, d));
+            chill.DropDownItems.Add(item);
+        }
+        menu.Items.Add(chill);
+
+        _soundItem = new ToolStripMenuItem("Son", null, (_, _) => _controller.SetSound(!_settings.SoundEnabled)) { CheckOnClick = false };
+        menu.Items.Add(_soundItem);
 
         var bringHere = new ToolStripMenuItem("Ramene-le ici", null, (_, _) => _controller.BringHere());
         menu.Items.Add(bringHere);
@@ -159,9 +185,28 @@ internal sealed class PetApplicationContext : ApplicationContext
 
         _pauseItem.Checked = _settings.Paused;
         _claudeItem.Checked = _settings.OnlyWithClaudeDesktop;
+        _soundItem.Checked = _settings.SoundEnabled;
         _debugItem.Checked = _settings.DebugOverlay;
+        // relu a chaque ouverture : l'entree peut avoir ete retiree ailleurs (uninstall.ps1)
+        try { _startupItem.Checked = _startup.IsEnabled; }
+        catch (Exception e) { Diagnostics.Warn("lecture de la cle Run: " + e.Message); }
         foreach (var (item, value) in _scaleItems) item.Checked = _settings.Scale == value;
         foreach (var (item, value) in _opacityItems) item.Checked = _settings.OpacityPercent == value;
+        foreach (var (item, value) in _chillItems) item.Checked = _settings.ChillDelaySeconds == value;
+    }
+
+    void ToggleStartup()
+    {
+        try
+        {
+            bool on = _startup.Toggle();
+            Diagnostics.Info($"lancer au demarrage: {(on ? "active" : "retire")} ({_startup.ValueName} = {_startup.CurrentValue ?? "absent"})");
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Warn("cle Run non modifiee: " + e.Message);
+            _tray.ShowBalloonTip(6000, "Hamster", "Lancement au demarrage non modifie : " + e.Message, ToolTipIcon.Warning);
+        }
     }
 
     Icon BuildTrayIcon()
@@ -191,6 +236,8 @@ internal sealed class PetApplicationContext : ApplicationContext
             _tray.Visible = false;
             _tray.Dispose();
             _menu.Dispose();
+            // les watchers d'abord : plus aucun lot ne doit viser une fenetre en cours de destruction
+            _hub.Dispose();
             _controller.Dispose();
             if (_iconHandle != IntPtr.Zero) DestroyIcon(_iconHandle);
         }

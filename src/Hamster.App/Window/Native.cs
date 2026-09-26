@@ -73,6 +73,8 @@ internal static class Native
     [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    /// <summary>DPI de l'ecran de la fenetre (Windows 10 1607 et plus) : sert a la taille des etiquettes.</summary>
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
 
     [DllImport("user32.dll", SetLastError = true)]

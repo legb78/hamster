@@ -3,7 +3,10 @@ using System.Text.Json.Serialization;
 
 namespace Hamster.App;
 
-/// <summary>Reglages persistes dans %APPDATA%\Hamster\settings.json.</summary>
+/// <summary>
+/// Reglages persistes dans %APPDATA%\Hamster\settings.json, ou dans le dossier de la
+/// variable HAMSTER_SETTINGS_DIR : les tests s'en servent pour ne jamais toucher au vrai fichier.
+/// </summary>
 internal sealed class Settings
 {
     public int Scale { get; set; } = 2;
@@ -13,8 +16,14 @@ internal sealed class Settings
     /// <summary>Position du centre du personnage, en pixels ecran physiques. Null = jamais place.</summary>
     public int? AnchorX { get; set; }
     public int? AnchorY { get; set; }
-    /// <summary>Le hamster ne se montre que pendant que Claude Desktop tourne.</summary>
-    public bool OnlyWithClaudeDesktop { get; set; } = true;
+    /// <summary>
+    /// Le hamster ne se montre que pendant que Claude Desktop tourne. Faux par defaut : le
+    /// hamster suit Claude Code, qui tourne aussi bien dans un terminal ou VS Code.
+    /// </summary>
+    public bool OnlyWithClaudeDesktop { get; set; }
+    /// <summary>Secondes d'inactivite avant que le hamster passe de la balade aux activites de repos.</summary>
+    public int ChillDelaySeconds { get; set; } = 10;
+    public bool SoundEnabled { get; set; }
     /// <summary>
     /// Fragments de chemin qui designent le Claude.exe de Claude Desktop, et pas le
     /// claude.exe de Claude Code. A completer si Claude Desktop est installe ailleurs.
@@ -41,8 +50,15 @@ internal sealed class Settings
     /// </summary>
     public event Action<string, bool>? Unreadable;
 
-    public static string Directory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Hamster");
+    public static string Directory
+    {
+        get
+        {
+            var env = Environment.GetEnvironmentVariable("HAMSTER_SETTINGS_DIR");
+            if (!string.IsNullOrWhiteSpace(env)) return env;
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Hamster");
+        }
+    }
 
     static string Path_ => Path.Combine(Directory, "settings.json");
     static string BadPath => Path.Combine(Directory, "settings.json.bad");
@@ -176,6 +192,7 @@ internal sealed class Settings
     {
         Scale = Math.Clamp(Scale, 1, 3);
         OpacityPercent = Math.Clamp(OpacityPercent, 20, 100);
+        ChillDelaySeconds = Math.Clamp(ChillDelaySeconds, 1, 3600);
         // un marqueur vide serait contenu dans tous les chemins, CLI compris
         ClaudeDesktopPathMarkers = (ClaudeDesktopPathMarkers ?? new())
             .Where(m => !string.IsNullOrWhiteSpace(m)).ToList();

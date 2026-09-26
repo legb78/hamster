@@ -19,5 +19,9 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Hamster.Art\Hamster.Art.csproj" />
+    <ProjectReference Include="..\Hamster.Activity\Hamster.Activity.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Hamster.App.Tests" />
   </ItemGroup>
 </Project>
