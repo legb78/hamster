@@ -24,9 +24,13 @@ internal sealed class PetApplicationContext : ApplicationContext
     static readonly MethodInfo? ShowTrayMenu = typeof(NotifyIcon).GetMethod("ShowContextMenu",
         BindingFlags.Instance | BindingFlags.NonPublic);
 
+    ToolStripMenuItem _waitingItem = null!;
+    ToolStripSeparator _waitingSeparator = null!;
     ToolStripMenuItem _pauseItem = null!;
     ToolStripMenuItem _claudeItem = null!;
     ToolStripMenuItem _debugItem = null!;
+    // sans effet visible tant que le hamster est cache : grises pendant l'attente
+    readonly List<ToolStripItem> _petOnlyItems = new();
     readonly List<(ToolStripMenuItem Item, int Value)> _scaleItems = new();
     readonly List<(ToolStripMenuItem Item, int Value)> _opacityItems = new();
 
@@ -44,13 +48,15 @@ internal sealed class PetApplicationContext : ApplicationContext
             Visible = true,
             ContextMenuStrip = _menu,
         };
-        _tray.MouseClick += OnTrayClick;
+        // MouseUp et pas MouseClick : WinForms ne leve pas MouseClick au second
+        // relachement d'un double-clic, et le menu ouvert au premier se refermerait
+        _tray.MouseUp += OnTrayClick;
         _settings.Unreadable += ShowUnreadable;
 
         _controller.ClaudePresenceChanged += _ => UpdateTrayText();
         _controller.Start();
         UpdateTrayText();
-        if (_settings.LoadError != null) ShowUnreadable(_settings.LoadError);
+        if (_settings.LoadError != null) ShowUnreadable(_settings.LoadError, _settings.LoadBackedUp);
         if (ShowTrayMenu == null) Diagnostics.Warn("NotifyIcon.ShowContextMenu introuvable, repli sur Menu.Show");
 
         // le rappel arrive sur un thread du pool : on repasse sur le thread UI, ou
@@ -74,11 +80,13 @@ internal sealed class PetApplicationContext : ApplicationContext
 
     // stderr n'est visible nulle part pour un WinExe lance a l'ouverture de session :
     // une notification Windows est le seul moyen de dire que le fichier est casse
-    void ShowUnreadable(string error)
+    void ShowUnreadable(string error, bool backedUp)
     {
         string detail = error.Length > 120 ? error[..120] + "..." : error;
-        _tray.ShowBalloonTip(8000, "Hamster : settings.json illisible",
-            "Ta version est gardee dans settings.json.bad. " + detail, ToolTipIcon.Warning);
+        string where = backedUp
+            ? "Ta version est gardee dans settings.json.bad. "
+            : "Copie de secours impossible : corrige le fichier avant de toucher au menu. ";
+        _tray.ShowBalloonTip(8000, "Hamster : settings.json illisible", where + detail, ToolTipIcon.Warning);
     }
 
     // l'icone reste dans la zone de notification pendant l'attente : c'est le seul
@@ -89,6 +97,13 @@ internal sealed class PetApplicationContext : ApplicationContext
     ContextMenuStrip BuildMenu()
     {
         var menu = new ContextMenuStrip { ShowImageMargin = false };
+
+        // sans ca, un menu ouvert pendant l'attente laisse croire que le hamster est
+        // quelque part et que ses reglages ne marchent pas
+        _waitingItem = new ToolStripMenuItem("En attente de Claude Desktop") { Enabled = false };
+        _waitingSeparator = new ToolStripSeparator();
+        menu.Items.Add(_waitingItem);
+        menu.Items.Add(_waitingSeparator);
 
         _pauseItem = new ToolStripMenuItem("Pause", null, (_, _) =>
             _controller.SetUserPaused(!_settings.Paused)) { CheckOnClick = false };
@@ -107,6 +122,7 @@ internal sealed class PetApplicationContext : ApplicationContext
             size.DropDownItems.Add(item);
         }
         menu.Items.Add(size);
+        _petOnlyItems.Add(size);
 
         var opacity = new ToolStripMenuItem("Opacite");
         foreach (int p in new[] { 100, 75, 50 })
@@ -116,13 +132,17 @@ internal sealed class PetApplicationContext : ApplicationContext
             opacity.DropDownItems.Add(item);
         }
         menu.Items.Add(opacity);
+        _petOnlyItems.Add(opacity);
 
-        menu.Items.Add(new ToolStripMenuItem("Ramene-le ici", null, (_, _) => _controller.BringHere()));
+        var bringHere = new ToolStripMenuItem("Ramene-le ici", null, (_, _) => _controller.BringHere());
+        menu.Items.Add(bringHere);
+        _petOnlyItems.Add(bringHere);
         menu.Items.Add(new ToolStripSeparator());
 
         _debugItem = new ToolStripMenuItem("Overlay de debug", null,
             (_, _) => _controller.ToggleDebugOverlay());
         menu.Items.Add(_debugItem);
+        _petOnlyItems.Add(_debugItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("Quitter", null, (_, _) => ExitThreadCore()));
 
@@ -132,6 +152,11 @@ internal sealed class PetApplicationContext : ApplicationContext
 
     void SyncMenuState()
     {
+        bool waiting = _controller.WaitingForClaude;
+        _waitingItem.Visible = waiting;
+        _waitingSeparator.Visible = waiting;
+        foreach (var item in _petOnlyItems) item.Enabled = !waiting;
+
         _pauseItem.Checked = _settings.Paused;
         _claudeItem.Checked = _settings.OnlyWithClaudeDesktop;
         _debugItem.Checked = _settings.DebugOverlay;

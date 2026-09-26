@@ -31,8 +31,15 @@ internal sealed class Settings
     [JsonIgnore]
     public string? LoadError { get; private set; }
 
-    /// <summary>Leve quand un settings.json edite a la main se revele illisible en cours de route.</summary>
-    public event Action<string>? Unreadable;
+    /// <summary>Vrai si le fichier illisible a bien ete copie en settings.json.bad.</summary>
+    [JsonIgnore]
+    public bool LoadBackedUp { get; private set; }
+
+    /// <summary>
+    /// Leve quand un settings.json edite a la main se revele illisible en cours de route :
+    /// message d'erreur, et vrai si la copie .bad a reussi.
+    /// </summary>
+    public event Action<string, bool>? Unreadable;
 
     public static string Directory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Hamster");
@@ -49,14 +56,26 @@ internal sealed class Settings
         PropertyNameCaseInsensitive = true,
     };
 
-    // date d'ecriture du fichier a la derniere lecture ou ecriture de notre part
+    // date d'ecriture du fichier a la derniere lecture reussie ou ecriture de notre part
     DateTime _seenWriteUtc;
+
+    /// <summary>
+    /// Resultat d'une lecture. Value null + Error null = fichier absent.
+    /// Busy = fichier tenu par un autre processus (un editeur qui enregistre) : a retenter,
+    /// ce n'est pas un fichier casse.
+    /// </summary>
+    readonly record struct DiskRead(Settings? Value, string? Error, bool BackedUp, bool Busy);
 
     public static Settings Load()
     {
-        var s = ReadDisk(out string? error) ?? new Settings();
-        s.LoadError = error;
-        s._seenWriteUtc = Stamp();
+        // au demarrage on insiste plus : repartir des valeurs par defaut ferait ecraser
+        // position et reglages au premier Save
+        var stamp = Stamp();
+        var read = ReadDisk(attempts: 10);
+        var s = read.Value ?? new Settings();
+        s.LoadError = read.Error;
+        s.LoadBackedUp = read.BackedUp;
+        s._seenWriteUtc = read.Busy ? default : stamp;
         return s;
     }
 
@@ -67,17 +86,24 @@ internal sealed class Settings
     /// </summary>
     public bool RefreshMarkersFromDisk()
     {
+        // date lue avant le contenu : une ecriture entre les deux donnera une date
+        // differente au prochain passage, donc une relecture de plus, jamais de moins
         var stamp = Stamp();
         if (stamp == _seenWriteUtc) return false;
+
+        var read = ReadDisk(attempts: 3);
+        // occupe : on ne marque pas la date comme vue, le prochain passage retentera
+        if (read.Busy) return false;
         _seenWriteUtc = stamp;
 
-        var disk = ReadDisk(out string? error);
-        if (error != null)
+        if (read.Error != null)
         {
-            LoadError = error;
-            Unreadable?.Invoke(error);
+            LoadError = read.Error;
+            LoadBackedUp = read.BackedUp;
+            Unreadable?.Invoke(read.Error, read.BackedUp);
             return false;
         }
+        var disk = read.Value;
         if (disk == null || disk.ClaudeDesktopPathMarkers.SequenceEqual(ClaudeDesktopPathMarkers)) return false;
 
         ClaudeDesktopPathMarkers = disk.ClaudeDesktopPathMarkers;
@@ -89,6 +115,13 @@ internal sealed class Settings
     {
         // une edition a la main pas encore relue serait ecrasee par la version en memoire
         RefreshMarkersFromDisk();
+        if (Stamp() != _seenWriteUtc)
+        {
+            // encore tenu par un editeur : on garde le reglage en memoire, le prochain
+            // Save l'ecrira, plutot que d'ecraser une edition qu'on n'a pas pu lire
+            Diagnostics.Warn("settings occupes, sauvegarde reportee");
+            return;
+        }
         try
         {
             System.IO.Directory.CreateDirectory(Directory);
@@ -100,26 +133,35 @@ internal sealed class Settings
     }
 
     /// <summary>
-    /// Lit le fichier, null s'il n'existe pas. Illisible : on le copie en .bad avant que
-    /// le prochain Save ne l'ecrase, pour que l'edition de l'utilisateur ne soit pas perdue.
+    /// Lit le fichier. Illisible (JSON casse) : on le copie en .bad avant que le prochain
+    /// Save ne l'ecrase, pour que l'edition de l'utilisateur ne soit pas perdue.
     /// </summary>
-    static Settings? ReadDisk(out string? error)
+    static DiskRead ReadDisk(int attempts)
     {
-        error = null;
-        try
+        for (int attempt = 1; ; attempt++)
         {
-            if (!File.Exists(Path_)) return null;
-            var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(Path_), ReadOptions);
-            s?.Normalize();
-            return s;
-        }
-        catch (Exception e)
-        {
-            error = e.Message;
-            Diagnostics.Warn("settings illisibles: " + e.Message);
-            try { File.Copy(Path_, BadPath, overwrite: true); }
-            catch (Exception copy) { Diagnostics.Warn("copie .bad impossible: " + copy.Message); }
-            return null;
+            try
+            {
+                if (!File.Exists(Path_)) return default;
+                var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(Path_), ReadOptions);
+                s?.Normalize();
+                return new DiskRead(s, null, false, false);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // un editeur qui enregistre garde le fichier ouvert en ecriture un instant
+                if (attempt < attempts) { Thread.Sleep(100); continue; }
+                Diagnostics.Warn("settings occupes, relecture plus tard: " + e.Message);
+                return new DiskRead(null, null, false, true);
+            }
+            catch (Exception e)
+            {
+                Diagnostics.Warn("settings illisibles: " + e.Message);
+                bool backedUp = false;
+                try { File.Copy(Path_, BadPath, overwrite: true); backedUp = true; }
+                catch (Exception copy) { Diagnostics.Warn("copie .bad impossible: " + copy.Message); }
+                return new DiskRead(null, e.Message, backedUp, false);
+            }
         }
     }
 
