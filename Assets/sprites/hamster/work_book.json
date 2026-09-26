@@ -1,0 +1,8 @@
+{
+  "frameCount": 8,
+  "fps": 8,
+  "loop": true,
+  "frameSize": [128, 128],
+  "pivot": [64, 121],
+  "leavesBaseline": false
+}
