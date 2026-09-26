@@ -29,6 +29,8 @@ internal sealed class PetController : IDisposable
 
     // raisons de suspension, cumulatives
     bool _systemAsleep, _sessionLocked, _displayOff;
+    // Claude Desktop ferme : la seule raison qui cache aussi la fenetre
+    bool _claudeAbsent;
 
     // drag
     bool _pointerDown, _dragging;
@@ -36,7 +38,12 @@ internal sealed class PetController : IDisposable
     double _dragGrabOffsetSprite;
 
     public PetWindow Window => _window;
-    public bool Suspended => _settings.Paused || _systemAsleep || _sessionLocked || _displayOff;
+    public bool Suspended =>
+        _settings.Paused || _systemAsleep || _sessionLocked || _displayOff || _claudeAbsent;
+    public bool WaitingForClaude => _claudeAbsent;
+
+    /// <summary>Leve quand le hamster apparait (true) ou se cache (false) avec Claude Desktop.</summary>
+    public event Action<bool>? ClaudePresenceChanged;
 
     public PetController(Settings settings)
     {
@@ -61,14 +68,18 @@ internal sealed class PetController : IDisposable
 
     public void Start()
     {
-        _window.Show();
+        // on regarde avant la premiere apparition : lance a l'ouverture de session,
+        // le hamster ne doit pas clignoter a l'ecran si Claude Desktop n'est pas la
+        _claudeAbsent = !ClaudeDesktopPresent();
+        if (!_claudeAbsent) _window.Show();
         RestorePosition();
         ApplyCadence();
         _houseTimer.Start();
         if (!Suspended) _frameTimer.Start();
         _lastTickSeconds = _clock.Elapsed.TotalSeconds;
         Render();
-        Diagnostics.Info($"demarre, echelle {_settings.Scale}x, bureaux virtuels {_desktops.Status}");
+        Diagnostics.Info($"demarre, echelle {_settings.Scale}x, bureaux virtuels {_desktops.Status}" +
+            (_claudeAbsent ? ", attend Claude Desktop" : ""));
     }
 
     // ---- boucle -----------------------------------------------------------
@@ -228,6 +239,11 @@ internal sealed class PetController : IDisposable
     {
         _housekeepingTicks++;
 
+        // Claude Desktop : un coup d'oeil toutes les deux secondes. C'est une
+        // enumeration de processus, pas un evenement : Windows n'en offre pas
+        // sans activer l'audit des processus, qui est un reglage de securite
+        if (_housekeepingTicks % 2 == 1) SetClaudeAbsent(!ClaudeDesktopPresent());
+
         // certaines applications s'imposent en topmost et nous passent devant :
         // on se replace regulierement, ca coute un appel toutes les deux secondes
         if (_housekeepingTicks % 2 == 0 && !Suspended) _window.AssertTopMost();
@@ -258,6 +274,39 @@ internal sealed class PetController : IDisposable
     void SetAsleep(bool value) { if (_systemAsleep != value) { _systemAsleep = value; ApplySuspension("veille"); } }
     void SetLocked(bool value) { if (_sessionLocked != value) { _sessionLocked = value; ApplySuspension("verrouillage"); } }
     void SetDisplayOff(bool value) { if (_displayOff != value) { _displayOff = value; ApplySuspension("ecran"); } }
+
+    // ---- Claude Desktop ----------------------------------------------------
+
+    bool ClaudeDesktopPresent() =>
+        !_settings.OnlyWithClaudeDesktop || ClaudeDesktop.IsRunning(_settings.ClaudeDesktopPathMarkers);
+
+    void SetClaudeAbsent(bool value)
+    {
+        if (_claudeAbsent == value) return;
+        _claudeAbsent = value;
+        if (value)
+        {
+            CancelDrag();
+            _window.Hide();
+        }
+        else
+        {
+            _window.Show();
+            // ApplySuspension ne repeint pas si une autre raison (Pause) tient
+            // encore : sans ca il reapparaitrait sans premier plan garanti
+            _window.AssertTopMost();
+            Render();
+        }
+        ApplySuspension("claude desktop");
+        ClaudePresenceChanged?.Invoke(!value);
+    }
+
+    public void SetOnlyWithClaudeDesktop(bool value)
+    {
+        _settings.OnlyWithClaudeDesktop = value;
+        _settings.Save();
+        SetClaudeAbsent(!ClaudeDesktopPresent());
+    }
 
     public void SetUserPaused(bool value)
     {
@@ -332,6 +381,20 @@ internal sealed class PetController : IDisposable
             // reaction courte, et surtout il ne se retourne pas vers le curseur
             _animator.Play(Clips.React);
             ApplyCadence();
+        }
+    }
+
+    /// <summary>Lache un drag en cours, par exemple quand la fenetre se cache sous le curseur.</summary>
+    void CancelDrag()
+    {
+        if (!_pointerDown) return;
+        _window.Capture = false;
+        _pointerDown = false;
+        if (_dragging)
+        {
+            _dragging = false;
+            _motion.Settle(_motion.X);
+            SavePosition();
         }
     }
 

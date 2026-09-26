@@ -13,6 +13,15 @@ internal sealed class Settings
     /// <summary>Position du centre du personnage, en pixels ecran physiques. Null = jamais place.</summary>
     public int? AnchorX { get; set; }
     public int? AnchorY { get; set; }
+    /// <summary>Le hamster ne se montre que pendant que Claude Desktop tourne.</summary>
+    public bool OnlyWithClaudeDesktop { get; set; } = true;
+    /// <summary>
+    /// Fragments de chemin qui designent le Claude.exe de Claude Desktop, et pas le
+    /// claude.exe de Claude Code. A completer si Claude Desktop est installe ailleurs.
+    /// </summary>
+    public List<string> ClaudeDesktopPathMarkers { get; set; } = DefaultClaudeMarkers();
+
+    static List<string> DefaultClaudeMarkers() => new() { @"\WindowsApps\Claude_" };
 
     [JsonIgnore]
     public byte Alpha => (byte)Math.Clamp(OpacityPercent * 255 / 100, 40, 255);
@@ -51,5 +60,9 @@ internal sealed class Settings
     {
         Scale = Math.Clamp(Scale, 1, 3);
         OpacityPercent = Math.Clamp(OpacityPercent, 20, 100);
+        // un marqueur vide serait contenu dans tous les chemins, CLI compris
+        ClaudeDesktopPathMarkers = (ClaudeDesktopPathMarkers ?? new())
+            .Where(m => !string.IsNullOrWhiteSpace(m)).ToList();
+        if (ClaudeDesktopPathMarkers.Count == 0) ClaudeDesktopPathMarkers = DefaultClaudeMarkers();
     }
 }

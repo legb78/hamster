@@ -18,6 +18,7 @@ internal sealed class PetApplicationContext : ApplicationContext
     IntPtr _iconHandle;
 
     ToolStripMenuItem _pauseItem = null!;
+    ToolStripMenuItem _claudeItem = null!;
     ToolStripMenuItem _debugItem = null!;
     readonly List<(ToolStripMenuItem Item, int Value)> _scaleItems = new();
     readonly List<(ToolStripMenuItem Item, int Value)> _opacityItems = new();
@@ -37,8 +38,15 @@ internal sealed class PetApplicationContext : ApplicationContext
             ContextMenuStrip = _menu,
         };
 
+        _controller.ClaudePresenceChanged += _ => UpdateTrayText();
         _controller.Start();
+        UpdateTrayText();
     }
+
+    // l'icone reste dans la zone de notification pendant l'attente : c'est le seul
+    // moyen de quitter ou de changer de mode tant que le hamster est cache
+    void UpdateTrayText() =>
+        _tray.Text = _controller.WaitingForClaude ? "Hamster - attend Claude Desktop" : "Hamster";
 
     ContextMenuStrip BuildMenu()
     {
@@ -47,6 +55,10 @@ internal sealed class PetApplicationContext : ApplicationContext
         _pauseItem = new ToolStripMenuItem("Pause", null, (_, _) =>
             _controller.SetUserPaused(!_settings.Paused)) { CheckOnClick = false };
         menu.Items.Add(_pauseItem);
+
+        _claudeItem = new ToolStripMenuItem("Seulement avec Claude Desktop", null, (_, _) =>
+            _controller.SetOnlyWithClaudeDesktop(!_settings.OnlyWithClaudeDesktop)) { CheckOnClick = false };
+        menu.Items.Add(_claudeItem);
         menu.Items.Add(new ToolStripSeparator());
 
         var size = new ToolStripMenuItem("Taille");
@@ -83,6 +95,7 @@ internal sealed class PetApplicationContext : ApplicationContext
     void SyncMenuState()
     {
         _pauseItem.Checked = _settings.Paused;
+        _claudeItem.Checked = _settings.OnlyWithClaudeDesktop;
         _debugItem.Checked = _settings.DebugOverlay;
         foreach (var (item, value) in _scaleItems) item.Checked = _settings.Scale == value;
         foreach (var (item, value) in _opacityItems) item.Checked = _settings.OpacityPercent == value;

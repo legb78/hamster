@@ -17,7 +17,29 @@ Le SDK .NET suffit (testé avec 9.0.306). Ni Visual Studio, ni MSVC Build Tools.
 
 Pour quitter : clic droit sur le hamster, ou l'icône dans la zone de notification → Quitter.
 
-Les réglages persistent dans `%APPDATA%\Hamster\settings.json` (échelle, opacité, position, pause).
+Les réglages persistent dans `%APPDATA%\Hamster\settings.json` (échelle, opacité, position, pause,
+mode Claude Desktop).
+
+## Avec Claude Desktop
+
+```powershell
+.\Scripts\install.ps1     # publie dans %LOCALAPPDATA%\Programs\Hamster et lance à chaque session
+.\Scripts\uninstall.ps1   # défait tout, garde les réglages
+```
+
+Windows n'offre pas de déclencheur « quand l'application X démarre » sans activer l'audit
+des processus, un réglage de sécurité système. Le hamster fait donc l'inverse : il démarre
+avec la session (clé `HKCU\…\Run`, aucun droit administrateur), reste **caché** tant que
+Claude Desktop ne tourne pas, **apparaît** quand il démarre et se cache quand il se ferme.
+Délai : jusqu'à 2 s, le temps d'une énumération de processus.
+
+Le nom de processus ne suffit pas à reconnaître Claude Desktop : Claude Code (CLI, extension
+VS Code) s'appelle lui aussi `claude.exe`. Le hamster lit donc le chemin de l'exécutable et
+cherche `\WindowsApps\Claude_`, le dossier du paquet MSIX. Si Claude Desktop est installé
+ailleurs, ajouter un fragment de son chemin à `ClaudeDesktopPathMarkers` dans les réglages.
+
+Menu → **Seulement avec Claude Desktop** : décoché, le hamster reste visible en permanence.
+Pendant l'attente, l'icône de la zone de notification reste là pour quitter ou changer de mode.
 
 ## Structure
 
@@ -25,12 +47,13 @@ Les réglages persistent dans `%APPDATA%\Hamster\settings.json` (échelle, opaci
 src/Hamster.Art/     palette indexée, personnage paramétrable, clips — aucune dépendance Windows
 src/SpriteGen/       rend les sheets PNG, la palette .gpl et les planches de relecture
 src/Hamster.App/
-  App/               entrée, cycle de vie, réglages, icône de notification, menu, diagnostics
+  App/               entrée, cycle de vie, réglages, icône de notification, menu, diagnostics,
+                     détection de Claude Desktop
   Window/            fenêtre layered, surface DIB, contrôleur, bureaux virtuels, P/Invoke
   Render/            bibliothèque de sprites (miroir, recolorisation), animateur
   State/             balade du personnage
 Assets/              palette.gpl, sprites/hamster/, preview/
-Scripts/             build.ps1, run.ps1, shot.ps1
+Scripts/             build.ps1, run.ps1, shot.ps1, install.ps1, uninstall.ps1
 ```
 
 ## Adaptation macOS → Windows : ce qui a changé et pourquoi
@@ -79,6 +102,9 @@ dégradera proprement (rien de reconnu → IDLE) si une mise à jour de Claude C
       menu (clic droit + zone de notification), drag, position persistée, click-through sur
       l'alpha, balade en bas de l'écran, pause veille/verrouillage/écran éteint, instance unique,
       cadence adaptative 6–12 Hz, overlay de debug, personnage procédural.
+- [x] **Lancement avec Claude Desktop** (avancé de la phase 4) — démarrage à l'ouverture de
+      session, apparition et disparition avec Claude Desktop, scripts d'installation.
 - [ ] Phase 2 — machine à états, watcher de transcripts, hooks, garde-fous.
+      **Pas encore fait : le hamster ne réagit pas encore à ce que fait Claude Code.**
 - [ ] Phase 3 — pipeline pixel art complet, scènes de travail et de repos.
-- [ ] Phase 4 — minis, FX, sons, réglages, lancement au démarrage, installation.
+- [ ] Phase 4 — minis, FX, sons, réglages.

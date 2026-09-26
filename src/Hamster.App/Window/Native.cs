@@ -84,6 +84,20 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern bool UnregisterPowerSettingNotification(IntPtr handle);
 
+    // lecture du chemin d'un autre processus : le droit "limite" suffit et ne
+    // demande aucune elevation pour les processus de la meme session
+    public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint access, bool inheritHandle, int processId);
+
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "QueryFullProcessImageNameW",
+        SetLastError = true)]
+    public static extern bool QueryFullProcessImageName(IntPtr process, uint flags,
+        [Out] char[] exeName, ref int size);
+
     [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr hdc);
     [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr hdc);
     [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr hdc, IntPtr obj);
