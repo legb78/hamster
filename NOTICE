@@ -1,0 +1,39 @@
+Hamster
+Copyright 2026 Djamel OUAZAR
+
+This product is distributed under the Apache 2.0 licence (see the LICENSE file).
+
+
+================================================================================
+THIRD-PARTY COMPONENTS
+================================================================================
+
+Hamster redistributes none of these components in its repository. The .NET
+runtime is bundled only inside the published self-contained executable.
+
+
+--------------------------------------------------------------------------------
+.NET and Windows Forms
+--------------------------------------------------------------------------------
+Author   : Microsoft Corporation and the .NET Foundation
+Licence  : MIT
+Source   : https://github.com/dotnet/runtime
+           https://github.com/dotnet/winforms
+
+The runtime platform, bundled inside the published self-contained executable.
+
+
+--------------------------------------------------------------------------------
+Windows system sounds
+--------------------------------------------------------------------------------
+The optional sounds are played from C:\Windows\Media on the user's own machine.
+None is redistributed.
+
+
+================================================================================
+TRADEMARKS
+================================================================================
+
+Claude and Claude Code are products of Anthropic. Hamster is an independent
+project: it is not affiliated with, sponsored by or endorsed by Anthropic. It
+only reads the files that Claude Code already writes on the user's machine.

@@ -1,0 +1,58 @@
+<#
+.SYNOPSIS
+    Construit l'archive a publier : un Hamster.exe autonome, sans rien a installer.
+
+.DESCRIPTION
+    Un seul fichier autonome : ni .NET ni aucune dependance a installer sur la machine
+    cible. Le prix, c'est le poids du runtime .NET embarque ; l'archive zip le compresse.
+    L'archive contient aussi LICENSE et NOTICE (la licence Apache 2.0 impose de les
+    joindre a toute redistribution), un LISEZMOI et les deux variantes du hook.
+
+.PARAMETER Output
+    Dossier de destination. Par defaut publish/ a la racine du depot (ignore par git).
+
+.EXAMPLE
+    .\Scripts\publish.ps1
+#>
+[CmdletBinding()]
+param(
+    [string]$Output
+)
+
+$ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
+if (-not $Output) { $Output = Join-Path $root "publish" }
+$stage = Join-Path $Output "Hamster"
+$zip = Join-Path $Output "Hamster-win-x64.zip"
+
+if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+if (Test-Path $zip) { Remove-Item $zip -Force }
+
+& dotnet publish (Join-Path $root "src\Hamster.App\Hamster.App.csproj") `
+    -c Release `
+    -r win-x64 `
+    --self-contained true `
+    -p:PublishSingleFile=true `
+    -p:IncludeNativeLibrariesForSelfExtract=true `
+    -p:DebugType=none `
+    -o $stage `
+    --nologo
+if ($LASTEXITCODE -ne 0) { throw "dotnet publish en echec (code $LASTEXITCODE)" }
+
+# seul l'exe compte : un fichier de plus a cote serait une dependance oubliee
+$extra = @(Get-ChildItem $stage -File | Where-Object Name -ne "Hamster.exe")
+if ($extra.Count -gt 0) { throw "fichiers inattendus a cote de l'exe : $(($extra.Name) -join ', ')" }
+
+Copy-Item (Join-Path $root "LICENSE") $stage
+Copy-Item (Join-Path $root "NOTICE") $stage
+Copy-Item (Join-Path $root "Hooks\settings-snippet.json") (Join-Path $stage "hook-git-bash.json")
+Copy-Item (Join-Path $root "Hooks\settings-snippet.powershell.json") (Join-Path $stage "hook-powershell.json")
+Copy-Item (Join-Path $root "Scripts\LISEZMOI.txt") $stage
+
+Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal
+
+$exeMb = [math]::Round((Get-Item (Join-Path $stage "Hamster.exe")).Length / 1MB)
+$zipMb = [math]::Round((Get-Item $zip).Length / 1MB)
+Write-Host ""
+Write-Host "exe     : $(Join-Path $stage 'Hamster.exe') ($exeMb Mo)"
+Write-Host "archive : $zip ($zipMb Mo)"

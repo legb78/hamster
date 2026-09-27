@@ -273,18 +273,76 @@ static class HookTests
             T.True(entry.GetProperty("matcher").GetString()!.Split('|').ToHashSet().SetEquals(HookEventsWatcher.NeedsUserTypes), "memes types");
         });
 
-        T.Case("README : le bloc Notification a fusionner est celui de Hooks/settings-snippet.json", () =>
+        T.Case("Hooks/settings-snippet.powershell.json : meme bloc, via PowerShell", () =>
+        {
+            using var bash = JsonDocument.Parse(File.ReadAllText(Path.Combine(RepoRoot(), "Hooks", "settings-snippet.json")));
+            using var ps = JsonDocument.Parse(File.ReadAllText(Path.Combine(RepoRoot(), "Hooks", "settings-snippet.powershell.json")));
+            var entry = ps.RootElement.GetProperty("hooks").GetProperty("Notification")[0];
+            T.Eq(Matcher(bash), entry.GetProperty("matcher").GetString(), "meme matcher que la variante sh");
+            var hook = entry.GetProperty("hooks")[0];
+            T.Eq("command", hook.GetProperty("type").GetString(), "type");
+            T.Eq("powershell", hook.GetProperty("shell").GetString(), "shell");
+            T.Eq(true, hook.GetProperty("async").GetBoolean(), "async");
+            T.True(hook.GetProperty("command").GetString()!.Contains("exit 0"), "code 0 quoi qu'il arrive");
+        });
+
+        T.Case("README : les blocs Notification a fusionner sont ceux de Hooks/", () =>
         {
             string readme = File.ReadAllText(Path.Combine(RepoRoot(), "README.md"));
-            // les blocs json du README qui declarent des hooks : il n'y en a qu'un
+            // les blocs json du README qui declarent des hooks : un par variante, sh puis PowerShell
             var blocks = Regex.Matches(readme, "```json[ \\t]*\\r?\\n(.*?)```", RegexOptions.Singleline)
                 .Select(m => m.Groups[1].Value).Where(b => b.Contains("\"hooks\"")).ToList();
-            T.Eq(1, blocks.Count, "blocs json avec des hooks");
-            using var fromReadme = JsonDocument.Parse(blocks[0]);
-            using var snippet = JsonDocument.Parse(File.ReadAllText(Path.Combine(RepoRoot(), "Hooks", "settings-snippet.json")));
-            static string? Matcher(JsonDocument d) => d.RootElement.GetProperty("hooks").GetProperty("Notification")[0].GetProperty("matcher").GetString();
-            T.Eq(Matcher(snippet), Matcher(fromReadme), "matcher du README");
-            T.True(JsonElement.DeepEquals(snippet.RootElement, fromReadme.RootElement), "bloc du README identique au fichier, a la mise en forme pres");
+            T.Eq(2, blocks.Count, "blocs json avec des hooks");
+            foreach (var (block, file) in blocks.Zip(new[] { "settings-snippet.json", "settings-snippet.powershell.json" }))
+            {
+                using var fromReadme = JsonDocument.Parse(block);
+                using var snippet = JsonDocument.Parse(File.ReadAllText(Path.Combine(RepoRoot(), "Hooks", file)));
+                T.Eq(Matcher(snippet), Matcher(fromReadme), "matcher du README (" + file + ")");
+                T.True(JsonElement.DeepEquals(snippet.RootElement, fromReadme.RootElement),
+                    "bloc du README identique a " + file + ", a la mise en forme pres");
+            }
+        });
+
+        T.Case("variante PowerShell executee : payload recopie a l'octet, code 0, lu par le watcher", () =>
+        {
+            string? powershell = FindOnPath("powershell.exe");
+            if (powershell == null)
+            {
+                Console.WriteLine("      powershell.exe introuvable : test saute");
+                return;
+            }
+            using var ps = JsonDocument.Parse(File.ReadAllText(Path.Combine(RepoRoot(), "Hooks", "settings-snippet.powershell.json")));
+            string command = ps.RootElement.GetProperty("hooks").GetProperty("Notification")[0]
+                .GetProperty("hooks")[0].GetProperty("command").GetString()!;
+            string profile = TempDir.Create("profil");
+            try
+            {
+                string events = Path.Combine(profile, ".hamster", "events.jsonl");
+                // comme au lancement de l'app : HookInstaller cree ~/.hamster avant les watchers
+                // (dossier absent, le watcher ne le verrait qu'au rescan suivant, 5 s plus tard)
+                Directory.CreateDirectory(Path.GetDirectoryName(events)!);
+                var (w, c) = Start(events);
+                using (w)
+                {
+                    Thread.Sleep(300);
+                    // indente et accentue EN CLAIR (le serialiseur echappe les accents en é) :
+                    // l'encodage de l'entree standard doit rester UTF-8, sans BOM
+                    string payload = Payload("permission_prompt", "via-powershell", indented: true)
+                        .Replace(@"work\\demo", @"work\\démo été");
+                    T.True(payload.Contains("été"), "payload avec accents en clair");
+                    var sw = Stopwatch.StartNew();
+                    int code = RunPowerShell(powershell, command, profile, payload);
+                    Console.WriteLine($"      powershell : {sw.ElapsedMilliseconds} ms");
+                    T.Eq(0, code, "code de sortie");
+                    var written = File.ReadAllBytes(events);
+                    T.True(written.SequenceEqual(Encoding.UTF8.GetBytes(payload + "\n")), "octets ecrits = payload + LF, sans BOM");
+                    T.True(c.WaitFor(e => Needs(e, "via-powershell"), TimeSpan.FromSeconds(3)) != null, "lu par le watcher");
+                    var read = c.All().First(e => Needs(e, "via-powershell"));
+                    T.Eq(@"C:\work\démo été", read.Cwd, "accents intacts jusqu'au modele");
+                }
+                T.Eq(0, RunPowerShell(powershell, command, @"Z:\inexistant\profil", Payload("permission_prompt")), "code 0 malgre l'echec");
+            }
+            finally { TempDir.Delete(profile); }
         });
 
         T.Case("hook.sh execute par sh : payload recopie + saut de ligne, code 0, lu par le watcher", () =>
@@ -340,6 +398,50 @@ static class HookTests
         if (!p.WaitForExit(15000)) { p.Kill(); return -1; }
         T.Eq("", output, "aucune sortie");
         return p.ExitCode;
+    }
+
+    static string? Matcher(JsonDocument d) =>
+        d.RootElement.GetProperty("hooks").GetProperty("Notification")[0].GetProperty("matcher").GetString();
+
+    // reproduit l'appel le plus probable de Claude Code avec "shell": "powershell" ; la doc
+    // ne detaille pas la ligne de commande exacte, ce test ne vaut donc que pour la commande
+    static int RunPowerShell(string powershell, string command, string userProfile, string stdin)
+    {
+        var psi = new ProcessStartInfo(powershell)
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-NoProfile");
+        psi.ArgumentList.Add("-NonInteractive");
+        psi.ArgumentList.Add("-Command");
+        psi.ArgumentList.Add(command);
+        psi.Environment["USERPROFILE"] = userProfile;
+        using var p = Process.Start(psi)!;
+        var bytes = Encoding.UTF8.GetBytes(stdin);
+        p.StandardInput.BaseStream.Write(bytes, 0, bytes.Length);
+        p.StandardInput.Close();
+        string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+        if (!p.WaitForExit(20000)) { p.Kill(); return -1; }
+        T.Eq("", output.Trim(), "aucune sortie");
+        return p.ExitCode;
+    }
+
+    static string? FindOnPath(string exe)
+    {
+        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+        {
+            try
+            {
+                string candidate = Path.Combine(dir.Trim(), exe);
+                if (File.Exists(candidate)) return candidate;
+            }
+            catch (ArgumentException) { }
+        }
+        return null;
     }
 
     static string? FindSh()

@@ -8,13 +8,49 @@ Le personnage : hamster gris, énormes yeux noirs brillants, un nœud rose sur l
 Ces deux signatures visuelles sont tenues dans 100 % des frames — c'est la contrainte de
 lisibilité à 128 px.
 
+![Les animations du hamster](Assets/preview/contact.png)
+
+Projet indépendant, sans lien avec Anthropic. Claude et Claude Code sont des produits
+d'Anthropic ; le hamster lit seulement les fichiers que Claude Code écrit déjà sur ta machine.
+Rien ne sort de la machine : aucun réseau, aucun compte, aucune télémétrie.
+
+## Télécharger et lancer, sans rien installer
+
+1. Télécharge **`Hamster-win-x64.zip`** depuis la
+   [dernière version](https://github.com/legb78/hamster/releases/latest).
+2. Décompresse-le où tu veux, puis double-clique sur **`Hamster.exe`**. .NET est embarqué :
+   rien d'autre à installer.
+3. Windows prévient que l'exécutable n'est pas signé : **Informations complémentaires**, puis
+   **Exécuter quand même**. (Pas de signature de code : c'est payant, et hors du périmètre.)
+4. Le hamster apparaît en bas de l'écran. Menu : clic droit sur lui, ou clic sur son icône
+   dans la zone de notification (sous la flèche `^` si Windows l'y range). Coche
+   **Lancer au demarrage** pour qu'il démarre avec ta session — garde alors `Hamster.exe` à un
+   endroit fixe.
+5. Facultatif : pour qu'il décroche aussi quand Claude attend ton **autorisation**, ajoute le
+   hook (voir [plus bas](#doù-vient-létat)). L'archive contient les deux variantes :
+   `hook-git-bash.json` et `hook-powershell.json`.
+
+Testé sous Windows 11, 64 bits. Windows 10 devrait fonctionner, mais n'a pas été testé.
+Ni macOS ni Linux : l'app repose sur les fenêtres Windows.
+
+### Quick start (English)
+
+Download `Hamster-win-x64.zip` from the
+[latest release](https://github.com/legb78/hamster/releases/latest), unzip it, run
+`Hamster.exe` (nothing to install; Windows warns that it is unsigned: **More info**, then
+**Run anyway**). Right-click the hamster, or click its tray icon, for the menu; tick
+**Lancer au demarrage** to start it with Windows. Optional: merge the `hooks` block of
+`hook-git-bash.json` (Git Bash) or `hook-powershell.json` into `~/.claude/settings.json` so the
+hamster also picks up the phone on permission prompts. Tested on Windows 11 x64.
+
 ## Build et lancement, sans IDE
 
 Le SDK .NET suffit (testé avec 9.0.306). Ni Visual Studio, ni MSVC Build Tools, ni paquet NuGet.
 
 ```powershell
-.\Scripts\build.ps1   # compile l'app et régénère les sprites + la palette
-.\Scripts\run.ps1     # lance, logs sur stderr dans la console
+.\Scripts\build.ps1     # compile l'app et régénère les sprites + la palette
+.\Scripts\run.ps1       # lance, logs sur stderr dans la console
+.\Scripts\publish.ps1   # archive à publier : exe autonome + LICENSE, NOTICE, LISEZMOI, hooks
 ```
 
 Tests, sans fenêtre (applications console, code de sortie 1 au moindre échec) :
@@ -234,7 +270,39 @@ recourir au kill, et seulement dans la session Windows courante.
 
   Le hook recopie la notification dans `~/.hamster/events.jsonl` et rend la main aussitôt
   (`async`, code 0 quoi qu'il arrive). Il passe par `sh` : sous Windows, il faut Git Bash. Un
-  lancement de `sh` coûte de 160 à 310 ms (mesuré), en arrière-plan. Sans le hook, tout marche
+  lancement de `sh` coûte de 160 à 310 ms (mesuré), en arrière-plan.
+
+  **Sans Git Bash**, Claude Code lance les hooks avec PowerShell (doc des hooks : `"bash"` par
+  défaut, `"powershell"` sous Windows quand Git Bash n'est pas installé), et `sh` n'y existe
+  pas. Utiliser alors cette variante (`Hooks/settings-snippet.powershell.json`), qui n'a besoin
+  d'aucun fichier :
+
+  ```json
+  {
+    "hooks": {
+      "Notification": [
+        {
+          "matcher": "permission_prompt|worker_permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog",
+          "hooks": [
+            {
+              "type": "command",
+              "shell": "powershell",
+              "command": "$ErrorActionPreference = 'Stop'; try { [Console]::InputEncoding = [Text.UTF8Encoding]::new($false); $d = [IO.Path]::Combine($env:USERPROFILE, '.hamster'); [void][IO.Directory]::CreateDirectory($d); [IO.File]::AppendAllText([IO.Path]::Combine($d, 'events.jsonl'), [Console]::In.ReadToEnd().TrimStart([char]0xFEFF) + [char]10) } catch { }; exit 0",
+              "async": true,
+              "timeout": 10
+            }
+          ]
+        }
+      ]
+    }
+  }
+  ```
+
+  Même travail : recopier la notification, UTF-8 sans BOM, silence et code 0 quoi qu'il arrive.
+  Testé par `Hamster.Activity.Tests` avec `powershell.exe -NoProfile -NonInteractive -Command`
+  et l'entrée standard (payload indenté et accentué, relu par le watcher), environ 550 ms en
+  arrière-plan. La doc ne détaille pas la ligne de commande exacte qu'emploie Claude Code : la
+  commande est vérifiée, pas l'appel par Claude Code lui-même. Sans le hook, tout marche
   sauf les demandes d'autorisation : le téléphone ne sonne alors que pour les questions et les
   plans à valider, qui, eux, sont dans les transcripts.
 
@@ -364,3 +432,7 @@ La spec d'origine visait macOS. Ce qui ne transposait pas, et l'arbitrage retenu
       délai de chill.
 - [ ] Non vérifié : rendu sur un second écran à un autre DPI, et comportement face à une
       mise à jour du format des transcripts de Claude Code.
+
+## Licence
+
+[Apache 2.0](LICENSE). Composants tiers et marques : voir [NOTICE](NOTICE).

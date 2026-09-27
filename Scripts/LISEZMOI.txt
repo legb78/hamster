@@ -1,0 +1,40 @@
+HAMSTER - desktop pet Windows qui suit Claude Code
+https://github.com/legb78/hamster
+
+LANCER
+  Double-clic sur Hamster.exe. Rien a installer : .NET est embarque.
+  Au premier lancement, Windows previent que l'executable n'est pas signe :
+  "Informations complementaires", puis "Executer quand meme".
+  Teste sous Windows 11 64 bits. Windows 10 devrait fonctionner (non teste).
+
+MENU
+  Clic droit sur le hamster, ou clic sur son icone dans la zone de
+  notification (sous la fleche ^ si Windows l'y range).
+  "Lancer au demarrage" : il demarre avec la session Windows.
+  Garde Hamster.exe a un endroit fixe avant de cocher cette case.
+
+DEMANDES D'AUTORISATION (facultatif)
+  Pour que le hamster decroche aussi quand Claude attend ton autorisation,
+  fusionne dans ~/.claude/settings.json le bloc "hooks" de :
+    hook-git-bash.json    si Git Bash est installe
+    hook-powershell.json  sinon
+  Variante Git Bash : lance Hamster.exe une fois avant, c'est lui qui depose
+  ~/.hamster/hook.sh. La variante PowerShell n'a besoin d'aucun fichier.
+
+RETIRER
+  Menu > decoche "Lancer au demarrage", puis Quitter, puis supprime le
+  dossier. Reglages : %APPDATA%\Hamster. Hook : retire le bloc "hooks"
+  ajoute a la main, et le dossier ~/.hamster.
+
+Licence Apache 2.0 : voir LICENSE et NOTICE.
+Projet independant, sans lien avec Anthropic. Claude et Claude Code sont des
+produits d'Anthropic.
+
+---
+HAMSTER - a Windows desktop pet that mirrors Claude Code
+Run Hamster.exe (tested on Windows 11 x64, nothing to install). Windows warns that the
+file is not signed: "More info", then "Run anyway". Right-click the hamster, or
+click its tray icon, for the menu. Optional hook for permission prompts: merge the
+"hooks" block of hook-git-bash.json (Git Bash) or hook-powershell.json into
+~/.claude/settings.json. Apache 2.0. Independent project, not affiliated with
+Anthropic.

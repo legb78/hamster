@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt|worker_permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "$ErrorActionPreference = 'Stop'; try { [Console]::InputEncoding = [Text.UTF8Encoding]::new($false); $d = [IO.Path]::Combine($env:USERPROFILE, '.hamster'); [void][IO.Directory]::CreateDirectory($d); [IO.File]::AppendAllText([IO.Path]::Combine($d, 'events.jsonl'), [Console]::In.ReadToEnd().TrimStart([char]0xFEFF) + [char]10) } catch { }; exit 0",
+            "async": true,
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
