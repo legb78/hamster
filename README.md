@@ -49,7 +49,8 @@ six minis, un badge `+N` compte les autres. Les conversations qui attendent ta r
 en tête, la plus récente attente d'abord, puis les plus récents : des sous-agents ne font jamais
 disparaître une attente du tableau, même pendant la fête de 3 s qui passe devant une attente
 (demande d'un sous-agent quand le fil principal finit son tour). Cela vaut jusqu'à six attentes
-à la fois : au-delà, les plus anciennes n'ont plus de mini, comptées dans le `+N`.
+parmi les minis, sept avec celle du principal : au-delà, les plus anciennes n'ont plus de mini,
+comptées dans le `+N`.
 
 Pour que l'arc avant ne passe jamais devant le visage, le principal monte de 42 px (sprite)
 tant qu'il y a des minis : les minis de devant restent sous son museau. Vérifié au pixel sur
@@ -72,8 +73,10 @@ clignement, réaction, téléphone), des pixels opaques du haut jusqu'au bas du 
 accessoires qui ne sont pas de lui (cœur de la réaction, socle et cordon du téléphone) mais avec
 la bulle et le combiné du téléphone ; elle contient aussi le visage de chaque clip. Tirée du clip
 courant, avec ses accessoires (feux d'artifice, bol, tableau), elle faisait sauter l'étiquette
-d'un mini jusqu'à 338 px quand le principal changeait de clip ; désormais sa place ne dépend pas
-du clip. Si elle gêne, l'étiquette passe à côté de la zone de tête, du côté du mini ; si la place
+d'un mini jusqu'à 338 px quand le principal changeait de clip ; au milieu de l'écran, sa place ne
+dépend plus du clip. **Limite mesurée** : principal poussé contre le bord de l'écran, quand la
+place manque, environ 20 % des étiquettes dépendent encore du clip, avec des sauts jusqu'à
+200 px environ. Si elle gêne, l'étiquette passe à côté de la zone de tête, du côté du mini ; si la place
 manque de ce côté (principal poussé contre le bord de l'écran, nom long), elle se pose dessous,
 sur le mini lui-même, mais jamais sur le corps du principal (du bas du visage à la ligne de
 base). Rien ne tient hors de la zone de tête : mêmes règles autour du seul visage. Rien ne tient
@@ -102,6 +105,11 @@ plein écran, mode présentation, session verrouillée…). Chaque nouvelle atte
 
 **Overlay de debug** (menu) : clip, état, outil, nombre de minis, état des deux sources.
 Chaque changement d'état est journalisé sur stderr.
+
+**Journal de cycle de vie** : `cycle.log`, à côté de `settings.json`. Il reçoit quelques lignes
+par jour (démarrage, arrêt et sa raison, veille, reprise, fin de session Windows, exception non
+gérée) et il est coupé de moitié au-delà de 64 Ko. Un arrêt sans ligne « sortie du processus »
+signe un kill.
 
 ## Réglages
 
@@ -269,7 +277,7 @@ si une mise à jour de Claude Code le change.
 - **Priorité dans les minis.** Au-delà de six minis, les conversations en attente restent : elles
   passent en tête, la plus récente d'abord, avant les sous-agents et les autres conversations,
   y compris pendant la fête de 3 s qui passe devant une attente encore en cours. C'est exact
-  jusqu'à six attentes à la fois : au-delà, les plus anciennes sont comptées dans le badge `+N`,
+  jusqu'à six attentes parmi les minis (sept avec celle du principal) : au-delà, les plus anciennes sont comptées dans le badge `+N`,
   sans mini ni étiquette, et la sonnerie ne les annonce pas une seconde fois quand elles reviennent.
 - **Conversation inconnue.** Une notification pour une conversation dont aucun transcript n'a
   encore rien dit est ignorée, et comptée dans l'état du hook de l'overlay de debug

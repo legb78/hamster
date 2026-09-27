@@ -74,6 +74,7 @@ internal sealed class PetApplicationContext : ApplicationContext
         var window = _controller.Window;
         _quitWait = ThreadPool.RegisterWaitForSingleObject(quit, (_, _) =>
         {
+            Program.ExitReason = "signal d'arret (script)";
             try { window.BeginInvoke(new Action(ExitThreadCore)); }
             catch (Exception e) { Diagnostics.Warn("arret propre impossible: " + e.Message); }
         }, null, Timeout.Infinite, executeOnlyOnce: true);
@@ -170,7 +171,11 @@ internal sealed class PetApplicationContext : ApplicationContext
         menu.Items.Add(_debugItem);
         _petOnlyItems.Add(_debugItem);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(new ToolStripMenuItem("Quitter", null, (_, _) => ExitThreadCore()));
+        menu.Items.Add(new ToolStripMenuItem("Quitter", null, (_, _) =>
+        {
+            Program.ExitReason = "menu Quitter";
+            ExitThreadCore();
+        }));
 
         menu.Opening += (_, _) => SyncMenuState();
         return menu;

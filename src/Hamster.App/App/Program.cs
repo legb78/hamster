@@ -1,3 +1,5 @@
+using Microsoft.Win32;
+
 namespace Hamster.App;
 
 internal static class Program
@@ -10,6 +12,9 @@ internal static class Program
     /// l'icone de notification resterait en fantome jusqu'au survol de la souris.
     /// </summary>
     public const string QuitEventName = @"Local\Hamster.DesktopPet.Quit";
+
+    /// <summary>Pose par le menu ou le signal d'arret, ecrite dans cycle.log a la sortie.</summary>
+    internal static string? ExitReason;
 
     [STAThread]
     static int Main()
@@ -28,8 +33,19 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
+        Diagnostics.Cycle("demarrage " + Environment.ProcessPath);
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-            Diagnostics.Warn("exception non geree: " + e.ExceptionObject);
+        {
+            string text = e.ExceptionObject?.ToString() ?? "?";
+            Diagnostics.Cycle("exception non geree: " + (text.Length > 2000 ? text[..2000] : text));
+        };
+        // un kill ne passe par aucune de ces lignes : son absence dans cycle.log le signe
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Diagnostics.Cycle("sortie du processus");
+        SystemEvents.SessionEnding += (_, e) => Diagnostics.Cycle("fin de session Windows: " + e.Reason);
+        SystemEvents.PowerModeChanged += (_, e) =>
+        {
+            if (e.Mode is PowerModes.Suspend or PowerModes.Resume) Diagnostics.Cycle("alimentation: " + e.Mode);
+        };
 
         // auto-reset : l'attente consomme le signal. Et si un script tient encore le
         // handle d'un signal pose pour l'instance precedente, on repart de zero
@@ -38,6 +54,7 @@ internal static class Program
 
         using var context = new PetApplicationContext(quit);
         Application.Run(context);
+        Diagnostics.Cycle("arret: " + (ExitReason ?? "boucle de messages terminee sans raison connue"));
         return 0;
     }
 }
