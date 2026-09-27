@@ -21,6 +21,9 @@ Source   : https://github.com/dotnet/runtime
            https://github.com/dotnet/winforms
 
 The runtime platform, bundled inside the published self-contained executable.
+The release archive ships their licence and third-party notices, taken from the
+runtime packages used for the build: dotnet-runtime-LICENSE.txt,
+dotnet-runtime-THIRD-PARTY-NOTICES.txt and windowsdesktop-runtime-LICENSE.txt.
 
 
 --------------------------------------------------------------------------------

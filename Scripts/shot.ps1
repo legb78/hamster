@@ -1,6 +1,7 @@
 # Capture la zone de l'ecran occupee par le hamster, plus une petite marge.
 # Volontairement limite a la fenetre du personnage : on ne capture pas le bureau entier.
-param([string]$Out = "$PSScriptRoot\..\Assets\preview\window.png", [int]$Margin = 24)
+# Hors du depot par defaut : la marge montre un bout du bureau, qui n'a rien a faire dans un commit.
+param([string]$Out = (Join-Path $env:TEMP "hamster-window.png"), [int]$Margin = 24)
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing

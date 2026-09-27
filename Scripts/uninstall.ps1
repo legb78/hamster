@@ -26,6 +26,8 @@ if ($left.Count -gt 0) {
 }
 Write-Host ""
 Write-Host "A FAIRE A LA MAIN si tu avais branche le hook : retire le bloc Notification du hamster"
-Write-Host "(la commande sh `"`$HOME/.hamster/hook.sh`") de $([Environment]::GetFolderPath("UserProfile"))\.claude\settings.json,"
+Write-Host "(variante Git Bash : la commande sh `"`$HOME/.hamster/hook.sh`" ; variante PowerShell : la"
+Write-Host "commande qui ecrit dans .hamster\events.jsonl) de $([Environment]::GetFolderPath("UserProfile"))\.claude\settings.json,"
 Write-Host "ou du fichier de reglages de Claude Code ou tu l'avais mis. Ce script n'y touche pas."
-Write-Host "Tant qu'il reste, Claude Code lance un hook qui ne trouve plus son script et affiche une erreur de hook."
+Write-Host "Tant qu'il reste : la variante Git Bash affiche une erreur de hook a chaque notification,"
+Write-Host "la variante PowerShell recree .hamster et y ecrit en silence, sans limite de taille."

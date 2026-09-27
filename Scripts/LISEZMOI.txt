@@ -2,39 +2,63 @@ HAMSTER - desktop pet Windows qui suit Claude Code
 https://github.com/legb78/hamster
 
 LANCER
-  Double-clic sur Hamster.exe. Rien a installer : .NET est embarque.
-  Au premier lancement, Windows previent que l'executable n'est pas signe :
-  "Informations complementaires", puis "Executer quand meme".
+  1. Extrais l'archive (clic droit > Extraire tout) dans un dossier qui ne
+     bougera plus, par exemple Documents\Hamster. Ne lance pas l'exe depuis
+     l'apercu du zip.
+  2. Double-clique sur Hamster.exe. Rien a installer : .NET est embarque.
+  3. Windows previent que l'executable n'est pas signe : clique sur
+     "Informations complementaires", puis "Executer quand meme".
+     Smart App Control (Windows 11) peut le bloquer sans proposer ce bouton.
+     Si ton antivirus s'inquiete, compare l'empreinte SHA-256 de Hamster.exe
+     (PowerShell : Get-FileHash .\Hamster.exe) a celle des notes de version.
   Teste sous Windows 11 64 bits. Windows 10 devrait fonctionner (non teste).
 
 MENU
   Clic droit sur le hamster, ou clic sur son icone dans la zone de
   notification (sous la fleche ^ si Windows l'y range).
-  "Lancer au demarrage" : il demarre avec la session Windows.
-  Garde Hamster.exe a un endroit fixe avant de cocher cette case.
+  "Ramene-le ici" : le fait revenir sous ta souris si tu ne le vois plus.
+  "Lancer au demarrage" : le fait demarrer avec ta session Windows.
+
+METTRE A JOUR
+  Menu > Quitter, remplace Hamster.exe par le nouveau au meme endroit, relance.
+  Une seconde copie qui demarre pendant que la premiere tourne se ferme sans
+  rien dire : quitte toujours l'ancienne d'abord.
 
 DEMANDES D'AUTORISATION (facultatif)
-  Pour que le hamster decroche aussi quand Claude attend ton autorisation,
-  fusionne dans ~/.claude/settings.json le bloc "hooks" de :
-    hook-git-bash.json    si Git Bash est installe
-    hook-powershell.json  sinon
-  Variante Git Bash : lance Hamster.exe une fois avant, c'est lui qui depose
-  ~/.hamster/hook.sh. La variante PowerShell n'a besoin d'aucun fichier.
+  Pour que le hamster decroche aussi quand Claude attend ton autorisation :
+  1. Choisis la variante : hook-git-bash.json si Git Bash est installe
+     (C:\Program Files\Git existe), sinon hook-powershell.json.
+     Variante Git Bash : lance Hamster.exe une fois avant, c'est lui qui depose
+     %USERPROFILE%\.hamster\hook.sh. La variante PowerShell n'a besoin de rien.
+  2. Garde une copie de %USERPROFILE%\.claude\settings.json, puis :
+     - s'il n'existe pas, copie le fichier de la variante a sa place ;
+     - s'il existe sans cle "hooks", ajoute la cle "hooks" de la variante ;
+     - s'il a deja une cle "hooks", ajoute seulement "Notification" dedans.
 
 RETIRER
-  Menu > decoche "Lancer au demarrage", puis Quitter, puis supprime le
-  dossier. Reglages : %APPDATA%\Hamster. Hook : retire le bloc "hooks"
-  ajoute a la main, et le dossier ~/.hamster.
+  1. Menu > decoche "Lancer au demarrage", puis Quitter.
+  2. Supprime le dossier de l'exe, %APPDATA%\Hamster (reglages, cycle.log) et
+     %USERPROFILE%\.hamster.
+  3. Si tu avais branche le hook, retire son bloc de
+     %USERPROFILE%\.claude\settings.json.
 
-Licence Apache 2.0 : voir LICENSE et NOTICE.
+Licence Apache 2.0 : voir LICENSE et NOTICE. Le runtime .NET embarque est sous
+licence MIT : voir dotnet-runtime-LICENSE.txt, windowsdesktop-runtime-LICENSE.txt
+et dotnet-runtime-THIRD-PARTY-NOTICES.txt.
 Projet independant, sans lien avec Anthropic. Claude et Claude Code sont des
 produits d'Anthropic.
 
 ---
 HAMSTER - a Windows desktop pet that mirrors Claude Code
-Run Hamster.exe (tested on Windows 11 x64, nothing to install). Windows warns that the
-file is not signed: "More info", then "Run anyway". Right-click the hamster, or
-click its tray icon, for the menu. Optional hook for permission prompts: merge the
-"hooks" block of hook-git-bash.json (Git Bash) or hook-powershell.json into
-~/.claude/settings.json. Apache 2.0. Independent project, not affiliated with
+Extract the archive first (right-click > Extract All), then run Hamster.exe from
+the extracted folder (tested on Windows 11 x64, nothing to install). Windows warns
+that the file is not signed: "More info", then "Run anyway"; Smart App Control may
+block it outright. Right-click the hamster, or click its tray icon, for the menu:
+"Ramene-le ici" brings it back under the cursor, "Lancer au demarrage" starts it
+with Windows. To update: Quitter, replace the exe in place, run it again.
+Optional hook for permission prompts: merge the "hooks" block of
+hook-git-bash.json (Git Bash) or hook-powershell.json into
+%USERPROFILE%\.claude\settings.json. To remove: untick "Lancer au demarrage",
+Quitter, delete the folder, %APPDATA%\Hamster and %USERPROFILE%\.hamster, and
+remove the hook block. Apache 2.0. Independent project, not affiliated with
 Anthropic.

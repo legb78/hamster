@@ -45,6 +45,27 @@ if ($extra.Count -gt 0) { throw "fichiers inattendus a cote de l'exe : $(($extra
 
 Copy-Item (Join-Path $root "LICENSE") $stage
 Copy-Item (Join-Path $root "NOTICE") $stage
+
+# l'exe embarque le runtime .NET et Windows Forms (MIT) : leur licence et leurs avis tiers
+# accompagnent l'archive. On prend ceux des paquets de runtime que la publication a
+# reellement utilises, lus dans project.assets.json, pas ceux de l'installation du SDK.
+$assets = Get-Content (Join-Path $root "src\Hamster.App\obj\project.assets.json") -Raw | ConvertFrom-Json
+$packages = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE ".nuget\packages" }
+$legal = @{
+    "Microsoft.NETCore.App.Runtime.win-x64"        = @{ "LICENSE.TXT" = "dotnet-runtime-LICENSE.txt"; "THIRD-PARTY-NOTICES.TXT" = "dotnet-runtime-THIRD-PARTY-NOTICES.txt" }
+    "Microsoft.WindowsDesktop.App.Runtime.win-x64" = @{ "LICENSE" = "windowsdesktop-runtime-LICENSE.txt" }
+}
+foreach ($id in $legal.Keys) {
+    $lib = $assets.libraries.PSObject.Properties.Name | Where-Object { $_ -like "$id/*" } | Select-Object -First 1
+    if (-not $lib) { throw "$id absent de project.assets.json" }
+    $dir = Join-Path $packages ($lib.ToLowerInvariant())
+    foreach ($file in $legal[$id].Keys) {
+        $src = Join-Path $dir $file
+        if (-not (Test-Path $src)) { throw "licence introuvable : $src" }
+        Copy-Item $src (Join-Path $stage $legal[$id][$file])
+    }
+    Write-Host "runtime embarque : $lib"
+}
 Copy-Item (Join-Path $root "Hooks\settings-snippet.json") (Join-Path $stage "hook-git-bash.json")
 Copy-Item (Join-Path $root "Hooks\settings-snippet.powershell.json") (Join-Path $stage "hook-powershell.json")
 Copy-Item (Join-Path $root "Scripts\LISEZMOI.txt") $stage

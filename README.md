@@ -16,19 +16,55 @@ Rien ne sort de la machine : aucun réseau, aucun compte, aucune télémétrie.
 
 ## Télécharger et lancer, sans rien installer
 
-1. Télécharge **`Hamster-win-x64.zip`** depuis la
+1. Télécharge **`Hamster-win-x64.zip`** (environ 43 Mo, 108 Mo une fois décompressé : le
+   runtime .NET est inclus) depuis la
    [dernière version](https://github.com/legb78/hamster/releases/latest).
-2. Décompresse-le où tu veux, puis double-clique sur **`Hamster.exe`**. .NET est embarqué :
-   rien d'autre à installer.
-3. Windows prévient que l'exécutable n'est pas signé : **Informations complémentaires**, puis
-   **Exécuter quand même**. (Pas de signature de code : c'est payant, et hors du périmètre.)
+2. **Décompresse d'abord** : clic droit sur le zip, **Extraire tout**, dans un dossier qui ne
+   bougera plus (par exemple `Documents\Hamster`). Ne lance pas l'exe depuis l'aperçu du zip :
+   il tournerait depuis un dossier temporaire, et « Lancer au demarrage » retiendrait ce chemin.
+3. Double-clique sur **`Hamster.exe`**. Rien d'autre à installer. Windows prévient que
+   l'exécutable n'est pas signé : **Informations complémentaires**, puis **Exécuter quand
+   même** (pas de signature de code : elle est payante). Si **Smart App Control** est actif
+   (Windows 11), il peut bloquer un exécutable non signé sans proposer ce bouton. Si ton
+   antivirus s'inquiète, compare l'empreinte SHA-256 du fichier à celle publiée dans les notes
+   de la version (`Get-FileHash .\Hamster.exe` dans PowerShell).
 4. Le hamster apparaît en bas de l'écran. Menu : clic droit sur lui, ou clic sur son icône
-   dans la zone de notification (sous la flèche `^` si Windows l'y range). Coche
-   **Lancer au demarrage** pour qu'il démarre avec ta session — garde alors `Hamster.exe` à un
-   endroit fixe.
+   dans la zone de notification (sous la flèche `^` si Windows l'y range).
+   **Ramene-le ici** le fait revenir sous ta souris si tu ne le vois plus.
+   **Lancer au demarrage** le fait démarrer avec ta session.
 5. Facultatif : pour qu'il décroche aussi quand Claude attend ton **autorisation**, ajoute le
-   hook (voir [plus bas](#doù-vient-létat)). L'archive contient les deux variantes :
-   `hook-git-bash.json` et `hook-powershell.json`.
+   hook, voir [Brancher le hook](#brancher-le-hook-facultatif).
+
+**Mettre à jour** : menu → **Quitter**, remplace `Hamster.exe` par le nouveau au même endroit
+(la case « Lancer au demarrage » reste valable tant que le chemin ne change pas), relance-le.
+Une seconde copie qui démarre alors que la première tourne se ferme sans rien dire : quitte
+toujours l'ancienne d'abord.
+
+**Retirer** : menu → décoche **Lancer au demarrage**, puis **Quitter**. Supprime ensuite le
+dossier de l'exe, `%APPDATA%\Hamster` (réglages et `cycle.log`) et `%USERPROFILE%\.hamster`.
+Si tu avais branché le hook, retire son bloc de `%USERPROFILE%\.claude\settings.json` : sans
+cela, la variante Git Bash afficherait une erreur de hook à chaque notification, et la
+variante PowerShell continuerait d'écrire en silence dans `%USERPROFILE%\.hamster\events.jsonl`.
+
+### Brancher le hook (facultatif)
+
+Sans hook, le hamster suit tout, sauf les demandes d'autorisation. Pour les ajouter :
+
+1. Choisis la variante. Si Git Bash est installé (`C:\Program Files\Git` existe, ou
+   `where sh` répond dans une invite de commandes), prends `hook-git-bash.json` ; sinon
+   `hook-powershell.json`. Dans le dépôt, ce sont `Hooks/settings-snippet.json` et
+   `Hooks/settings-snippet.powershell.json`. Pour la variante Git Bash, lance le hamster une
+   fois avant : c'est lui qui dépose `%USERPROFILE%\.hamster\hook.sh`.
+2. Ouvre `%USERPROFILE%\.claude\settings.json` (c'est `~/.claude/settings.json`), les réglages
+   de Claude Code.
+   - Le fichier n'existe pas : copie le fichier de la variante à sa place, tel quel.
+   - Il existe sans clé `"hooks"` : ajoute la clé `"hooks"` du fichier de la variante à côté des
+     autres clés (attention aux virgules).
+   - Il a déjà une clé `"hooks"` : ajoute seulement l'entrée `"Notification"` dedans (ou, si
+     `"Notification"` existe déjà, ajoute l'objet qu'elle contient à sa liste). Ne crée jamais
+     un second `"hooks"`.
+3. Garde une copie du fichier avant de le modifier. Le détail des deux variantes est plus bas,
+   dans [D'où vient l'état](#doù-vient-létat).
 
 Testé sous Windows 11, 64 bits. Windows 10 devrait fonctionner, mais n'a pas été testé.
 Ni macOS ni Linux : l'app repose sur les fenêtres Windows.
@@ -37,9 +73,11 @@ Ni macOS ni Linux : l'app repose sur les fenêtres Windows.
 
 Download `Hamster-win-x64.zip` from the
 [latest release](https://github.com/legb78/hamster/releases/latest), unzip it, run
-`Hamster.exe` (nothing to install; Windows warns that it is unsigned: **More info**, then
-**Run anyway**). Right-click the hamster, or click its tray icon, for the menu; tick
-**Lancer au demarrage** to start it with Windows. Optional: merge the `hooks` block of
+`Hamster.exe` from the extracted folder, not from the zip preview (about 43 MB; nothing to
+install; Windows warns that it is unsigned: **More info**, then **Run anyway**; Smart App
+Control may block it outright). Right-click the hamster, or click its tray icon, for the menu;
+**Ramene-le ici** brings it back under the cursor, **Lancer au demarrage** starts it with
+Windows. To update: **Quitter**, replace the exe in place, run it again. Optional: merge the `hooks` block of
 `hook-git-bash.json` (Git Bash) or `hook-powershell.json` into `~/.claude/settings.json` so the
 hamster also picks up the phone on permission prompts. Tested on Windows 11 x64.
 
@@ -186,7 +224,9 @@ hamster, supprime le dossier installé, puis `~/.hamster` : `hook.sh`, `events.j
 `%APPDATA%\Hamster\settings.json`. Il **ne défait pas tout** : il ne lit ni ne modifie jamais les
 réglages de Claude Code. Si tu as ajouté le bloc `Notification` du hook (voir plus bas) à
 `~/.claude/settings.json`, retire-le **à la main** ; le script le rappelle en finissant. Tant
-qu'il reste, Claude Code lance à chaque notification un hook dont le script n'existe plus, et
+qu'il reste, la variante PowerShell continue d'écrire en silence dans
+`%USERPROFILE%\.hamster\events.jsonl` (sans rotation, faute d'app pour la faire), et la variante
+Git Bash lance à chaque notification un hook dont le script n'existe plus, et Claude Code
 affiche une erreur de hook non bloquante (d'après la
 [doc des hooks](https://code.claude.com/docs/en/hooks) : code de sortie 127, « the action
 proceeds »).
@@ -394,9 +434,12 @@ src/Hamster.App/
   Render/              frames indexées, animateur, composition, orbite, police 3x5, étiquettes
   State/               balade, directeur (état -> clip), foule des minis, sonnerie des attentes
 tests/                 Hamster.Activity.Tests, Hamster.App.Tests
-Hooks/                 hook.sh, settings-snippet.json (jamais appliqué automatiquement)
+Hooks/                 hook.sh, settings-snippet.json (Git Bash), settings-snippet.powershell.json
+                       (jamais appliqués automatiquement)
 Assets/                palette.gpl, sprites/hamster/, preview/
-Scripts/               build.ps1, run.ps1, shot.ps1, install.ps1, uninstall.ps1, common.ps1
+Scripts/               build.ps1, run.ps1, shot.ps1, install.ps1, uninstall.ps1, common.ps1,
+                       publish.ps1 (archive de release), LISEZMOI.txt (joint à l'archive)
+LICENSE, NOTICE        Apache 2.0 ; composants tiers et marques
 ```
 
 ## Adaptation macOS → Windows : ce qui a changé et pourquoi
