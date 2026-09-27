@@ -48,16 +48,19 @@ Copy-Item (Join-Path $root "NOTICE") $stage
 
 # l'exe embarque le runtime .NET et Windows Forms (MIT) : leur licence et leurs avis tiers
 # accompagnent l'archive. On prend ceux des paquets de runtime que la publication a
-# reellement utilises, lus dans project.assets.json, pas ceux de l'installation du SDK.
+# reellement utilises, lus dans project.assets.json (downloadDependencies, version exacte
+# notee "[9.0.10, 9.0.10]"), pas ceux de l'installation du SDK.
 $assets = Get-Content (Join-Path $root "src\Hamster.App\obj\project.assets.json") -Raw | ConvertFrom-Json
+$downloads = @($assets.project.frameworks.PSObject.Properties | ForEach-Object { $_.Value.downloadDependencies })
 $packages = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE ".nuget\packages" }
 $legal = @{
     "Microsoft.NETCore.App.Runtime.win-x64"        = @{ "LICENSE.TXT" = "dotnet-runtime-LICENSE.txt"; "THIRD-PARTY-NOTICES.TXT" = "dotnet-runtime-THIRD-PARTY-NOTICES.txt" }
     "Microsoft.WindowsDesktop.App.Runtime.win-x64" = @{ "LICENSE" = "windowsdesktop-runtime-LICENSE.txt" }
 }
 foreach ($id in $legal.Keys) {
-    $lib = $assets.libraries.PSObject.Properties.Name | Where-Object { $_ -like "$id/*" } | Select-Object -First 1
-    if (-not $lib) { throw "$id absent de project.assets.json" }
+    $dep = $downloads | Where-Object { $_.name -eq $id } | Select-Object -First 1
+    if (-not $dep -or $dep.version -notmatch '^\[([0-9][^,\]]*)') { throw "$id absent de project.assets.json" }
+    $lib = "$id/$($Matches[1])"
     $dir = Join-Path $packages ($lib.ToLowerInvariant())
     foreach ($file in $legal[$id].Keys) {
         $src = Join-Path $dir $file
