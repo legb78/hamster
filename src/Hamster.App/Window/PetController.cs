@@ -302,8 +302,7 @@ internal sealed class PetController : IDisposable
         // coordonnees, tiennent donc sans connaitre encore la taille de la fenetre
         var (labelMinX, labelMaxX) = LabelLayout.ScreenBounds(_screen.WorkingArea, CenterScreenX(), spriteW);
         var labels = BuildLabels(places, mainLeft, mainTop, s,
-            LabelLayout.FaceRect(mainClip, mainMirror, mainLeft, mainTop, s),
-            LabelLayout.HeadRect(mainClip, mainMirror, mainLeft, mainTop, s),
+            LabelLayout.AreaOf(mainClip, mainMirror, _library, mainLeft, mainTop, s),
             labelMinX, labelMaxX, spriteH);
         int minX = 0, maxX = spriteW, minY = 0;
         foreach (var l in labels)
@@ -384,10 +383,10 @@ internal sealed class PetController : IDisposable
     /// en attente porte en permanence son nom, qu'elle soit la principale ou un mini : c'est
     /// celle qui a besoin de toi. Au survol, celle du hamster survole. Toutes restent entre
     /// minX et maxX (le bord de l'ecran) ; celles des minis evitent le visage du principal, sa
-    /// tete (bulle, telephone) quand la place le permet, et les etiquettes deja posees
-    /// (LabelLayout.MiniLabel).
+    /// zone de tete (bulle, telephone), la meme pour tous ses clips, quand la place le permet,
+    /// et les etiquettes deja posees (LabelLayout.MiniLabel).
     /// </summary>
-    List<LabelBox> BuildLabels(List<MiniPlace> places, int mainLeft, int mainTop, int s, Rectangle? face, Rectangle? head,
+    List<LabelBox> BuildLabels(List<MiniPlace> places, int mainLeft, int mainTop, int s, MainArea? main,
         int minX, int maxX, int maxY)
     {
         var result = new List<LabelBox>();
@@ -419,7 +418,7 @@ internal sealed class PetController : IDisposable
             // de place (bord de l'ecran, visage) et quitter le curseur, qui la ferait revenir
             string text = Fit(waiting ? m.Label : MiniHoverText(m));
             var (shown, reserved) = LabelLayout.MiniLabel(p.X, p.Feet - p.Bob, p.Bob, m.Body.Current.TopRow, LabelSize(text), s,
-                face, head, placed, minX, maxX, maxY);
+                main, placed, minX, maxX, maxY);
             result.Add(new LabelBox(m.Id, text, shown, m.State == PetState.WaitingUser));
             placed.Add(reserved);
         }

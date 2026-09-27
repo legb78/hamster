@@ -100,7 +100,15 @@ public sealed class ActivityOptions
 }
 
 /// <summary>Un mini hamster : sous-agent ("subagent") ou autre session active ("session").</summary>
-public sealed record MiniInfo(string Id, string Kind, string Label, string ColorKey, PetState State, DateTimeOffset Since);
+public sealed record MiniInfo(string Id, string Kind, string Label, string ColorKey, PetState State, DateTimeOffset Since)
+{
+    /// <summary>
+    /// Session seulement : debut de son attente en cours, meme quand la fete (Celebrating)
+    /// passe devant ; null sans attente. Une attente garde ce debut tant qu'elle dure : la
+    /// sonnerie s'en sert pour ne pas annoncer deux fois la meme.
+    /// </summary>
+    public DateTimeOffset? WaitSince { get; init; }
+}
 
 public sealed record ActivitySnapshot(
     PetState State,
@@ -109,4 +117,8 @@ public sealed record ActivitySnapshot(
     string? Tool,
     bool AnySessionActive,
     IReadOnlyList<MiniInfo> Minis,
-    int MinisOverflow);
+    int MinisOverflow)
+{
+    /// <summary>Debut de l'attente en cours de la principale, comme MiniInfo.WaitSince ; null sans attente.</summary>
+    public DateTimeOffset? MainWaitSince { get; init; }
+}

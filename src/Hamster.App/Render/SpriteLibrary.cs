@@ -21,8 +21,8 @@ internal sealed class RenderClip
     FaceBox?[]? _faces;
     bool[]? _facesDone;
     int? _topRow;
-    (int X0, int Y0, int X1, int Y1)? _faceBounds, _headBounds;
-    bool _faceBoundsDone, _headBoundsDone;
+    (int X0, int Y0, int X1, int Y1)? _faceBounds;
+    bool _faceBoundsDone;
 
     public int FrameCount => Frames.Length;
 
@@ -62,34 +62,6 @@ internal sealed class RenderClip
             _faceBounds = x1 < x0 ? null : (x0, y0, x1, y1);
             _faceBoundsDone = true;
             return _faceBounds;
-        }
-    }
-
-    /// <summary>
-    /// Rectangle des pixels opaques du clip, toutes frames, de la ligne du haut jusqu'au bas du
-    /// visage : la tete et ce qui l'entoure, bulle du telephone, combine, noeud, pattes levees.
-    /// Null sans visage. Les etiquettes des minis l'evitent quand la place le permet.
-    /// </summary>
-    public (int X0, int Y0, int X1, int Y1)? HeadBounds
-    {
-        get
-        {
-            if (_headBoundsDone) return _headBounds;
-            _headBoundsDone = true;
-            if (FaceBounds is not { } face) return _headBounds = null;
-            int n = PixelCanvas.Size;
-            int x0 = int.MaxValue, y0 = int.MaxValue, x1 = int.MinValue, y1 = int.MinValue;
-            foreach (var frame in Frames)
-                for (int y = 0; y <= face.Y1 && y < n; y++)
-                for (int x = 0; x < n; x++)
-                {
-                    if (frame[y * n + x] == 0) continue;
-                    if (x < x0) x0 = x;
-                    if (x > x1) x1 = x;
-                    if (y < y0) y0 = y;
-                    if (y > y1) y1 = y;
-                }
-            return _headBounds = (Math.Min(x0, face.X0), Math.Min(y0, face.Y0), Math.Max(x1, face.X1), Math.Max(y1, face.Y1));
         }
     }
 
@@ -133,6 +105,8 @@ internal sealed class SpriteLibrary
             };
         }
 
+        (HeadZone, BodyZone) = Zones(Clips.BuildCharacter(0), _clips.Values);
+
         var basePalette = Palette.Premultiplied();
         _palettes = new uint[Palette.BowHues.Length][];
         for (int h = 0; h < _palettes.Length; h++)
@@ -144,6 +118,74 @@ internal sealed class SpriteLibrary
             p[Palette.BowLight] = basePalette[light];
             _palettes[h] = p;
         }
+    }
+
+    /// <summary>
+    /// Zone de tete du principal, en pixels de frame, bornes comprises : la meme pour tous les
+    /// clips et les deux sens, calculee une fois. Union, sur les frames des clips de base du
+    /// personnage (Clips.BuildCharacter : idle, walk, blink, react, phone, sans leurs accessoires
+    /// mais avec la bulle et le combine du telephone), dans chaque sens ou le clip s'affiche, des
+    /// pixels opaques du haut jusqu'au bas du visage ; plus le visage de chaque clip, pour que la
+    /// zone le contienne toujours. Les etiquettes des minis l'evitent quand la place le permet.
+    /// Tiree du clip courant, avec ses accessoires (feux d'artifice, bol, tableau), elle faisait
+    /// sauter l'etiquette d'un mini jusqu'a 338 px quand le principal changeait de clip.
+    /// </summary>
+    public (int X0, int Y0, int X1, int Y1) HeadZone { get; }
+
+    /// <summary>
+    /// Corps du principal, meme calcul sous le visage : du bas du visage jusqu'a la ligne de base.
+    /// La place sous l'obstacle l'evite, pour qu'une etiquette ne tombe pas sur son ventre.
+    /// </summary>
+    public (int X0, int Y0, int X1, int Y1) BodyZone { get; }
+
+    static ((int X0, int Y0, int X1, int Y1) Head, (int X0, int Y0, int X1, int Y1) Body) Zones(
+        IEnumerable<Clip> character, IEnumerable<RenderClip> all)
+    {
+        const int n = PixelCanvas.Size;
+        var head = new Bounds();
+        var body = new Bounds();
+        foreach (var clip in character)
+        foreach (var frame in clip.Frames)
+        {
+            if (Compositor.FaceOf(frame, n) is not { } face) continue;
+            foreach (bool mirror in clip.Mirrorable ? new[] { false, true } : new[] { false })
+            {
+                for (int y = 0; y <= PixelCanvas.Baseline; y++)
+                for (int x = 0; x < n; x++)
+                    if (frame[y * n + x] != 0) (y <= face.Y1 ? head : body).Add(mirror ? n - 1 - x : x, y);
+                head.Add((face.X0, face.Y0, face.X1, face.Y1), mirror);
+            }
+        }
+        // le visage de chaque clip, dans chaque sens ou il s'affiche : la zone et le visage ne font
+        // qu'un obstacle, le meme pour tous les clips (la fete saute plus haut que react, le
+        // telephone et les scenes a objet decalent le personnage)
+        foreach (var clip in all)
+            if (clip.FaceBounds is { } f)
+                foreach (bool mirror in clip.Mirrorable ? new[] { false, true } : new[] { false })
+                    head.Add(f, mirror);
+        return (head.Value, body.Value);
+    }
+
+    /// <summary>Rectangle englobant, en pixels de frame, agrandi point par point.</summary>
+    sealed class Bounds
+    {
+        int _x0 = int.MaxValue, _y0 = int.MaxValue, _x1 = int.MinValue, _y1 = int.MinValue;
+
+        public void Add(int x, int y)
+        {
+            _x0 = Math.Min(_x0, x); _y0 = Math.Min(_y0, y);
+            _x1 = Math.Max(_x1, x); _y1 = Math.Max(_y1, y);
+        }
+
+        /// <summary>Ajoute le rectangle b, retourne horizontalement si mirror.</summary>
+        public void Add((int X0, int Y0, int X1, int Y1) b, bool mirror)
+        {
+            Add(mirror ? Size - 1 - b.X1 : b.X0, b.Y0);
+            Add(mirror ? Size - 1 - b.X0 : b.X1, b.Y1);
+        }
+
+        public (int X0, int Y0, int X1, int Y1) Value =>
+            _x1 < _x0 ? throw new InvalidOperationException("aucun pixel") : (_x0, _y0, _x1, _y1);
     }
 
     public RenderClip this[string name] => _clips[name];

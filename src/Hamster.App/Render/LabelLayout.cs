@@ -50,11 +50,11 @@ internal static class LabelLayout
     /// posees ensuite l'evitent, quel que soit le rebond de chacune.
     /// </summary>
     public static (Rectangle Shown, Rectangle Reserved) MiniLabel(int x, int feet, int bob, int topRow, Size size, int scale,
-        Rectangle? face, Rectangle? head, IReadOnlyList<Rectangle> placed, int minX, int maxX, int maxY)
+        MainArea? main, IReadOnlyList<Rectangle> placed, int minX, int maxX, int maxY)
     {
         int top = feet - SpriteLibrary.MiniBaseline + topRow / 2;
         int sweep = Orbit.Bob * scale;
-        var r = Place(Above(x * scale, top * scale, size), face, head, placed, minX, maxX, maxY, sweep);
+        var r = Place(Above(x * scale, top * scale, size), main, placed, minX, maxX, maxY, sweep);
         return (new Rectangle(r.X, r.Y + bob * scale, r.Width, r.Height), Swept(r, sweep));
     }
 
@@ -62,53 +62,62 @@ internal static class LabelLayout
     public static Rectangle Swept(Rectangle r, int sweep) => new(r.X, r.Y - sweep, r.Width, r.Height + 2 * sweep);
 
     /// <summary>
-    /// Etiquette d'un mini. Elle ne couvre jamais le visage du principal, evite sa tete (bulle,
-    /// combine, oreilles : head) quand la place le permet, ne couvre pas une etiquette deja
-    /// posee, reste dans [minX, maxX] et ne descend pas sous maxY (le bas de la fenetre). Places
-    /// essayees dans l'ordre, chacune montee au besoin au-dessus des etiquettes qu'elle
-    /// chevauche : au-dessus de sa tete ; a cote de l'obstacle, du cote du mini ; sous
-    /// l'obstacle, sur le corps du mini ; a cote de l'obstacle, de l'autre cote. Cette derniere
-    /// passe en dernier : de l'autre cote du principal, l'etiquette semble appartenir a un autre
-    /// mini. L'obstacle est la tete, puis, si rien ne tient, le visage seul. Chaque place vaut
-    /// pour toute la bande de rebond (sweep au-dessus et au-dessous) ; le rectangle rendu est
-    /// celui du milieu de la bande.
+    /// Etiquette d'un mini. Elle ne couvre jamais le visage du principal, evite sa zone de tete
+    /// (bulle, combine, oreilles, noeud : MainArea.Head) quand la place le permet, ne couvre pas
+    /// une etiquette deja posee, reste dans [minX, maxX] et ne descend pas sous maxY (le bas de
+    /// la fenetre). Toujours du cote du mini : de l'autre cote du principal, l'etiquette semble
+    /// appartenir a un autre mini. Places essayees dans l'ordre, chacune montee au besoin
+    /// au-dessus des etiquettes qu'elle chevauche, en evitant la zone de tete puis, si rien ne
+    /// tient, le visage seul : au-dessus de sa tete ; a cote de l'obstacle ; sous l'obstacle, sur
+    /// le corps du mini, hors du corps du principal (sinon elle tombait sur son ventre). Si rien
+    /// ne tient, au-dessus du mini, quitte a toucher la zone de tete, montee au-dessus du visage
+    /// s'il le faut. Seule une etiquette plus large que la place entre le bord de l'ecran et le
+    /// principal passe de l'autre cote, calee sur le bord. Chaque place vaut pour toute la bande
+    /// de rebond (sweep au-dessus et au-dessous) ; le rectangle rendu est celui du milieu de la
+    /// bande. La zone de tete et le corps ne dependent pas du clip : tant qu'une place evite la
+    /// zone de tete, elle n'en depend pas non plus.
     /// </summary>
-    public static Rectangle Place(Rectangle wanted, Rectangle? face, Rectangle? head, IReadOnlyList<Rectangle> placed,
+    public static Rectangle Place(Rectangle wanted, MainArea? main, IReadOnlyList<Rectangle> placed,
         int minX, int maxX, int maxY, int sweep = 0)
     {
-        var r = PlaceBand(Swept(wanted, sweep), face, head, placed, minX, maxX, maxY);
+        var r = PlaceBand(Swept(wanted, sweep), main, placed, minX, maxX, maxY);
         return new Rectangle(r.X, r.Y + sweep, wanted.Width, wanted.Height);
     }
 
-    static Rectangle PlaceBand(Rectangle wanted, Rectangle? face, Rectangle? head, IReadOnlyList<Rectangle> placed,
+    static Rectangle PlaceBand(Rectangle wanted, MainArea? main, IReadOnlyList<Rectangle> placed,
         int minX, int maxX, int maxY)
     {
         var first = KeepInside(wanted, minX, maxX);
-        if (face is not { } rawFace) return Stack(first, placed);
-        var obstacles = head is { } rawHead
-            ? new[] { Grow(Rectangle.Union(rawHead, rawFace)), Grow(rawFace) }
-            : new[] { Grow(rawFace) };
+        if (main is not { } m) return Stack(first, placed);
+        var face = Grow(m.Face);
+        // la zone de tete contient le visage de tous les clips (SpriteLibrary.HeadZone) : l'union
+        // ne sert que de garantie
+        var head = Grow(Rectangle.Union(m.Head, m.Face));
+        var body = Grow(m.Body);
+        // le cote du mini : celui ou tombe le centre de l'etiquette voulue, par rapport au milieu
+        // de la zone de tete, qui ne depend pas du clip
+        bool rightSide = wanted.X + wanted.Width / 2 >= head.X + head.Width / 2;
+        Rectangle Beside(Rectangle f, bool right) => new(right ? f.Right : f.Left - first.Width, first.Y, first.Width, first.Height);
+        Rectangle Below(Rectangle f) => new(first.X, f.Bottom, first.Width, first.Height);
 
-        Rectangle? faceOnly = null;
-        foreach (var f in obstacles)
+        // chaque obstacle contient le visage : une place qui l'evite evite le visage
+        var candidates = new (Rectangle Place, Rectangle Avoid, bool Under)[]
         {
-            // le cote du mini : celui ou tombe le centre de l'etiquette voulue
-            bool rightSide = wanted.X + wanted.Width / 2 >= f.X + f.Width / 2;
-            var right = new Rectangle(f.Right, first.Y, first.Width, first.Height);
-            var left = new Rectangle(f.Left - first.Width, first.Y, first.Width, first.Height);
-            var below = new Rectangle(first.X, f.Bottom, first.Width, first.Height);
-            Rectangle[] candidates = { first, rightSide ? right : left, below, rightSide ? left : right };
-            foreach (var c in candidates)
-            {
-                // chaque obstacle contient le visage : une place qui l'evite evite le visage
-                if (c.Left < minX || c.Right > maxX || c.Bottom > maxY || c.IntersectsWith(f)) continue;
-                faceOnly ??= c;
-                var r = Stack(c, placed);
-                if (!r.IntersectsWith(f) && Hit(r, placed) < 0) return r;
-            }
+            (first, head, false), (Beside(head, rightSide), head, false), (Below(head), head, true),
+            (first, face, false), (Beside(face, rightSide), face, false), (Below(face), face, true),
+        };
+        foreach (var (c, avoid, under) in candidates)
+        {
+            if (c.Left < minX || c.Right > maxX || c.Bottom > maxY || c.IntersectsWith(avoid)
+                || (under && c.IntersectsWith(body))) continue;
+            var r = Stack(c, placed);
+            if (!r.IntersectsWith(avoid) && !(under && r.IntersectsWith(body)) && Hit(r, placed) < 0) return r;
         }
-        // rien ne tient : le visage d'abord, quitte a chevaucher une etiquette
-        return faceOnly ?? first;
+        // rien ne tient : au-dessus du mini, quitte a toucher la zone de tete, jamais sur le
+        // visage. Stack ne fait que monter : au-dessus du visage, elle y reste
+        var last = Stack(first, placed);
+        if (last.IntersectsWith(face)) last = Stack(last with { Y = face.Top - last.Height }, placed);
+        return last;
     }
 
     /// <summary>Monte r au-dessus de chaque etiquette posee qu'elle chevauche ; X ne bouge pas.</summary>
@@ -138,9 +147,15 @@ internal static class LabelLayout
     public static Rectangle? FaceRect(RenderClip clip, bool mirror, int left, int top, int scale) =>
         clip.FaceBounds is { } f ? ToScreen(f, mirror, left, top, scale) : null;
 
-    /// <summary>Tete du principal (RenderClip.HeadBounds), dans le meme repere que FaceRect.</summary>
-    public static Rectangle? HeadRect(RenderClip clip, bool mirror, int left, int top, int scale) =>
-        clip.HeadBounds is { } h ? ToScreen(h, mirror, left, top, scale) : null;
+    /// <summary>
+    /// Ce que les etiquettes des minis evitent sur le principal, dans le meme repere que FaceRect :
+    /// le visage du clip ; la zone de tete et le corps de la bibliotheque, les memes pour tous les
+    /// clips et deja valables dans les deux sens. Null sans visage (FX).
+    /// </summary>
+    public static MainArea? AreaOf(RenderClip clip, bool mirror, SpriteLibrary library, int left, int top, int scale) =>
+        FaceRect(clip, mirror, left, top, scale) is { } face
+            ? new MainArea(face, ToScreen(library.HeadZone, false, left, top, scale), ToScreen(library.BodyZone, false, left, top, scale))
+            : null;
 
     static Rectangle ToScreen((int X0, int Y0, int X1, int Y1) b, bool mirror, int left, int top, int scale)
     {
@@ -151,3 +166,11 @@ internal static class LabelLayout
 
     static Rectangle Grow(Rectangle r) => Rectangle.Inflate(r, Gap / 2, Gap / 2);
 }
+
+/// <summary>
+/// Ce que les etiquettes des minis evitent sur le principal, en pixels ecran relatifs au tampon
+/// agrandi : Face, le visage du clip courant, jamais couvert ; Head, la zone de tete
+/// (SpriteLibrary.HeadZone), la meme pour tous les clips, evitee quand la place le permet ;
+/// Body, son corps (SpriteLibrary.BodyZone), que la place sous l'obstacle evite.
+/// </summary>
+internal readonly record struct MainArea(Rectangle Face, Rectangle Head, Rectangle Body);

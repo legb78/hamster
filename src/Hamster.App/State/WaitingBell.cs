@@ -3,21 +3,33 @@ using Hamster.Activity;
 namespace Hamster.App.State;
 
 /// <summary>
-/// La sonnerie des attentes. Elle part quand l'ensemble des sessions qui attendent
-/// l'utilisateur, la principale et les minis de session, gagne un membre : une seconde
-/// conversation qui se met a attendre sonne aussi, et une attente deja annoncee ne resonne
-/// pas quand elle passe de mini a principale. Pur calcul : Rings dit si le controleur joue le
-/// son (qui verifie encore Son coche et les notifications de Windows).
+/// La sonnerie des attentes. Elle part quand une session, la principale ou un mini de session,
+/// se met au telephone avec une attente pas encore annoncee : une seconde conversation qui se
+/// met a attendre sonne aussi. Une attente se reconnait a son debut (WaitSince) : deja annoncee,
+/// elle ne resonne pas tant que ce debut ne change pas, ni quand elle passe de mini a principale,
+/// ni apres la fete de 3 s qui passe devant elle, ni quand elle revient apres avoir ete coupee de
+/// l'instantane. Pur calcul : Rings dit si le controleur joue le son (qui verifie encore Son
+/// coche et les notifications de Windows).
 /// </summary>
 internal sealed class WaitingBell
 {
     /// <summary>Pas de son pendant l'amorcage : les transcripts relus ne sont pas des nouveautes.</summary>
     public const double QuietStartSeconds = 3;
 
-    readonly HashSet<string> _waiting = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Attentes retenues au plus. Au-dela, la plus ancienne est oubliee : il faudrait plus
+    /// d'attentes cachees a la fois que ce plafond pour qu'une d'elles resonne.
+    /// </summary>
+    public const int MaxRemembered = 64;
 
-    /// <summary>Sessions tenues pour en attente apres le dernier Update.</summary>
-    public IReadOnlyCollection<string> Waiting => _waiting;
+    /// <summary>Attentes deja annoncees, visibles ou non : session, debut de l'attente.</summary>
+    readonly Dictionary<string, DateTimeOffset> _announced = new(StringComparer.Ordinal);
+
+    /// <summary>Sessions au telephone dans le dernier instantane.</summary>
+    HashSet<string> _shown = new(StringComparer.Ordinal);
+
+    /// <summary>Sessions dont l'attente est deja annoncee apres le dernier Update, visibles ou non.</summary>
+    public IReadOnlyCollection<string> Waiting => _announced.Keys;
 
     /// <summary>
     /// Aucun son, sonnerie comprise : hamster suspendu (pause, veille, cache), hub pas encore
@@ -31,42 +43,46 @@ internal sealed class WaitingBell
     public static bool Rings(IReadOnlyList<string> joined, bool quiet) => !quiet && joined.Count > 0;
 
     /// <summary>
-    /// Aligne l'ensemble sur l'instantane. Rend les sessions qui viennent de s'y ajouter :
-    /// vide, pas de sonnerie. A appeler a chaque instantane, meme quand on ne sonne pas,
-    /// pour que les attentes vues pendant l'amorcage ne sonnent pas ensuite.
+    /// Note les attentes de l'instantane. Rend les sessions qui viennent de se mettre au
+    /// telephone avec une attente pas encore annoncee : vide, pas de sonnerie. A appeler a chaque
+    /// instantane, meme quand on ne sonne pas, pour que les attentes vues pendant l'amorcage ne
+    /// sonnent pas ensuite.
     /// </summary>
     public IReadOnlyList<string> Update(ActivitySnapshot s)
     {
-        var now = new HashSet<string>(StringComparer.Ordinal);
-        var visible = new HashSet<string>(StringComparer.Ordinal);
         var joined = new List<string>();
-        void See(string id, PetState state)
+        var shown = new HashSet<string>(StringComparer.Ordinal);
+        void See(string id, PetState state, DateTimeOffset? waitSince)
         {
-            visible.Add(id);
-            // la fete (3 s) passe devant l'attente sans la terminer : une demande d'un sous-agent
-            // pendant la fin du tour du principal reprend ensuite, deja annoncee
-            if (state == PetState.Celebrating && _waiting.Contains(id)) now.Add(id);
-            if (state != PetState.WaitingUser || !now.Add(id)) return;
+            // visible sans attente en cours : la sienne est finie, la prochaine aura un autre debut
+            if (waitSince == null && state != PetState.WaitingUser)
+            {
+                _announced.Remove(id);
+                return;
+            }
+            // la fete passe devant l'attente sans la terminer : elle sonnera, si elle est nouvelle,
+            // quand le telephone se montrera
+            if (state != PetState.WaitingUser || !shown.Add(id)) return;
+            // un instantane sans debut (fabrique a la main) vaut une attente sans date
+            var since = waitSince ?? DateTimeOffset.MinValue;
+            bool known = _announced.TryGetValue(id, out var announced) && announced == since;
+            _announced[id] = since;
+            // deja au telephone a l'instantane precedent : la meme conversation, sans nouvelle
+            // sonnerie, meme si une demande a pris la suite de la sienne sans pause entre les deux
+            if (known || _shown.Contains(id)) return;
             // dans l'ordre de l'instantane : principale d'abord
-            if (!_waiting.Contains(id)) joined.Add(id);
+            joined.Add(id);
         }
 
-        if (s.MainSessionId is { } main) See(main, s.State);
+        if (s.MainSessionId is { } main) See(main, s.State, s.MainWaitSince);
         foreach (var m in s.Minis)
-            if (m.Kind == "session") See(m.Id, m.State);
+            if (m.Kind == "session") See(m.Id, m.State, m.WaitSince);
 
-        // ActivityModel.Snapshot met les attentes en tete des minis : une conversation qui attend
-        // n'est coupee de l'instantane que si toutes les places sont prises par des attentes.
-        // Alors seulement, une attente deja annoncee et absente est gardee, pour ne pas resonner
-        // quand elle revient. Hors de ce cas, absente veut dire finie : sa prochaine attente sonne
-        if (s.MinisOverflow > 0 && s.Minis.Count > 0 && s.Minis.All(IsWaitingSession))
-            foreach (var id in _waiting)
-                if (!visible.Contains(id)) now.Add(id);
-
-        _waiting.Clear();
-        _waiting.UnionWith(now);
+        // une attente absente de l'instantane (coupee par six attentes plus recentes) est gardee :
+        // elle ne resonne pas en revenant, tant que son debut ne change pas. Seul le plafond en oublie
+        while (_announced.Count > MaxRemembered)
+            _announced.Remove(_announced.MinBy(kv => kv.Value).Key);
+        _shown = shown;
         return joined;
     }
-
-    static bool IsWaitingSession(MiniInfo m) => m.Kind == "session" && m.State == PetState.WaitingUser;
 }

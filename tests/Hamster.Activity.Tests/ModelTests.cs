@@ -549,66 +549,82 @@ static class ModelTests
             T.Eq(PetState.WaitingUser, s.State, "au telephone");
         });
 
-        T.Case("fuzz, 3 sessions au pas de 0,5 s : jamais de retour X, Y, X sans evenement nouveau", () =>
+        T.Case("attente cedee qui expire, session gardee active par un sous-agent : ne reprend pas la place (X, Y, X)", () =>
         {
-            int seeds = 120, departures = 0, returns = 0, quick = 0, yielded = 0;
-            long steps = 0;
-            var failures = new List<string>();
-            for (int seed = 1; seed <= seeds; seed++)
+            // scenario du verificateur. Y attend depuis 0 s, X depuis 5 s sur le fil d'un sous-agent
+            // qui garde un outil en suspens (actif 30 min). Y perimee cede a X ; X perimee a 125 s
+            // garde la place faute de successeur ; a 600 s l'attente de Y expire, Y travaille par son
+            // sous-agent (evenement a 432 s) jusqu'a 612 s et succede a X. A 605 s l'attente de X
+            // expire elle aussi : avant, X perdait alors sa marque et reprenait la place a 612,5 s,
+            // sans aucun evenement depuis qu'elle l'avait quittee
+            var m = M(E(K.PromptSubmitted, -1, session: B), E(K.ToolStarted, -0.5, session: B, tool: "Bash", detail: "y1"),
+                E(K.NeedsUser, 0, session: B, detail: "permission_prompt"),
+                E(K.PromptSubmitted, 3), E(K.SubagentActivity, 3.5, agent: "xa", detail: "fond"),
+                E(K.ToolStarted, 4, agent: "xa", tool: "Bash", detail: "xt"), E(K.NeedsUser, 5, detail: "permission_prompt"));
+            var mains = new List<string?>();
+            for (double t = 5; t <= 1200; t += 0.5)
             {
-                var (mains, touched) = Fuzz(seed, TimeSpan.FromHours(3));
-                int n = mains.Count;
-                steps += n;
-                // par session : prochain pas ou elle est principale, pas ou elle attend en mini, pas ou
-                // elle recoit un evenement (sommes cumulees)
-                var next = new int[FuzzIds.Length][];
-                var waitPre = new int[FuzzIds.Length][];
-                var touchPre = new int[FuzzIds.Length][];
-                var anyPre = new int[n + 1];
-                for (int x = 0; x < FuzzIds.Length; x++)
-                {
-                    next[x] = new int[n + 1];
-                    waitPre[x] = new int[n + 1];
-                    touchPre[x] = new int[n + 1];
-                    next[x][n] = n;
-                    for (int j = n - 1; j >= 0; j--) next[x][j] = mains[j].Id == FuzzIds[x] ? j : next[x][j + 1];
-                    for (int j = 0; j < n; j++)
-                    {
-                        waitPre[x][j + 1] = waitPre[x][j] + (mains[j].OthersWaiting(FuzzIds[x]) ? 1 : 0);
-                        touchPre[x][j + 1] = touchPre[x][j] + ((touched[j] >> x) & 1);
-                    }
-                }
-                for (int j = 0; j < n; j++) anyPre[j + 1] = anyPre[j] + (touched[j] != 0 ? 1 : 0);
-
-                for (int i = 1; i < n; i++)
-                {
-                    if (mains[i - 1].Id is not { } id || mains[i].Id == id) continue;
-                    departures++;
-                    int x = Array.IndexOf(FuzzIds, id);
-                    int k = next[x][i];
-                    if (k == n) continue;
-                    returns++;
-                    string where = $"graine {seed}, {id} quitte la place a {i * 0.5:F1} s et la reprend a {k * 0.5:F1} s";
-                    // un va-et-vient court sans aucun evenement : le choix se contredit d'un instantane a l'autre
-                    if (k - i <= 20)
-                    {
-                        quick++;
-                        if (anyPre[k + 1] - anyPre[i] == 0) failures.Add("va-et-vient sans evenement : " + where);
-                    }
-                    // une attente qui a cede la place, toujours la meme, ne la reprend pas sans rien dire de neuf
-                    bool stillWaiting = waitPre[x][k] - waitPre[x][i] == k - i;
-                    if (mains[i - 1].Waiting && stillWaiting && mains[k].Waiting)
-                    {
-                        yielded++;
-                        if (touchPre[x][k + 1] - touchPre[x][i] == 0) failures.Add("attente cedee reprise sans evenement : " + where);
-                    }
-                }
+                if (t == 432) m.Apply(E(K.SubagentActivity, 432, session: B, agent: "ya", detail: "fond"));
+                mains.Add(m.Snapshot(At(t)).MainSessionId);
             }
-            Console.WriteLine($"      {seeds} graines, {steps} instantanes, {departures} changements de principale, {returns} retours " +
-                              $"dont {quick} en moins de 10 s et {yielded} d'une attente cedee ; injustifies : " +
-                              $"{failures.Count(x => x.StartsWith("va-et-vient"))} va-et-vient, {failures.Count(x => x.StartsWith("attente"))} attentes cedees reprises");
-            T.True(failures.Count == 0, failures.Count + " retours injustifies, dont : " + string.Join(" ; ", failures.Take(3)));
-            T.True(departures > 1000 && returns > 100, "le fuzz fait bouger la principale");
+            string runs = string.Join(" ", Runs(mains, 5));
+            T.Eq(B, mains[Index(120, 5)], "Y tant que son attente est fraiche : " + runs);
+            T.Eq(A, mains[Index(120.5, 5)], "puis l'attente fraiche de X : " + runs);
+            T.Eq(B, mains[Index(600.5, 5)], "Y, qui a parle a 432 s, succede a X perimee : " + runs);
+            T.True(mains.Skip(Index(600.5, 5)).All(x => x != A), "X ne revient pas sans evenement : " + runs);
+            T.Eq<string?>(null, mains[Index(612.5, 5)], "Y eteinte : plus de principale : " + runs);
+            var s = m.Snapshot(At(1200));
+            T.Eq(PetState.Working, s.Minis.Single(x => x.Id == A).State, "X en mini, au travail par son sous-agent");
+            m.Apply(E(K.ToolFinished, 1201, agent: "xa", detail: "xt"));
+            T.Eq(A, m.Snapshot(At(1201.5)).MainSessionId, "un evenement de X : elle redevient principale");
+        });
+
+        T.Case("principale deplacee par une attente fraiche : ne revient pas quand cette attente expire sans evenement", () =>
+        {
+            // A ne travaille plus que par un sous-agent a l'outil en suspens (actif 30 min). B demande
+            // une autorisation a 12 s et prend la place ; sa demande expire a 612 s sans reponse
+            var m = M(E(K.PromptSubmitted, 0), E(K.SubagentActivity, 1, agent: "ag", detail: "fond"),
+                E(K.ToolStarted, 2, agent: "ag", tool: "Bash", detail: "long"), E(K.TurnEnded, 3),
+                E(K.PromptSubmitted, 10, session: B), E(K.ToolStarted, 11, session: B, tool: "Bash", detail: "b"),
+                E(K.NeedsUser, 12, session: B, detail: "permission_prompt"));
+            var mains = new List<string?>();
+            for (double t = 12; t <= 900; t += 0.5) mains.Add(m.Snapshot(At(t)).MainSessionId);
+            string runs = string.Join(" ", Runs(mains, 12));
+            T.Eq(B, mains[Index(12, 12)], "B prend la place : " + runs);
+            T.Eq(B, mains[Index(612, 12)], "B tant que dure sa demande : " + runs);
+            T.True(mains.Skip(Index(612.5, 12)).All(x => x == null), "A ne reprend pas la place sans evenement de A ni de B : " + runs);
+            T.Eq(PetState.Working, m.Snapshot(At(900)).Minis.Single(x => x.Id == A).State, "A en mini, au travail");
+            m.Apply(E(K.SubagentActivity, 901, agent: "ag", detail: "fond"));
+            T.Eq(A, m.Snapshot(At(901.5)).MainSessionId, "un evenement de A : principale");
+
+            // un evenement de B, sa reponse, rend A candidate : A reprend la place quand B s'arrete
+            var n = M(E(K.PromptSubmitted, 0), E(K.SubagentActivity, 1, agent: "ag", detail: "fond"),
+                E(K.ToolStarted, 2, agent: "ag", tool: "Bash", detail: "long"), E(K.TurnEnded, 3),
+                E(K.PromptSubmitted, 10, session: B), E(K.ToolStarted, 11, session: B, tool: "Bash", detail: "b"),
+                E(K.NeedsUser, 12, session: B, detail: "permission_prompt"), E(K.ToolFinished, 30, session: B, detail: "b"),
+                E(K.TurnEnded, 31, session: B, detail: "interrupted"));
+            T.Eq(A, n.Snapshot(At(32)).MainSessionId, "B a repondu puis fini : A, toujours active, revient");
+        });
+
+        T.Case("fuzz scripte du verificateur, 1000 graines de 4 h : aucun retour X, Y, X sans evenement nouveau de X ou de Y", () =>
+        {
+            // generateur de verify-model : tours, outils longs et muets, questions suivies de leur
+            // permission_prompt, demandes du hook, sous-agents de fond, sessions tuees, lectures en
+            // retard, fins de tour en double, api_error anterieurs lus apres la fin du tour
+            var r = FuzzRuns(1000, seed => ScriptedFuzz(seed, 3, 4));
+            Console.WriteLine($"      {r.Seeds} graines, {r.Steps} instantanes, {r.Changes} changements de principale, {r.Returns} retours, " +
+                   $"{r.Failures.Count} injustifies");
+            T.True(r.Failures.Count == 0, r.Failures.Count + " retours sans evenement nouveau, dont : " + string.Join(" ; ", r.Failures.Take(3)));
+            T.True(r.Changes > 10000 && r.Returns > 1000, "le fuzz fait bouger la principale");
+        });
+
+        T.Case("fuzz aleatoire, 120 graines de 3 h : aucun retour X, Y, X sans evenement nouveau de X ou de Y", () =>
+        {
+            var r = FuzzRuns(120, seed => Fuzz(seed, TimeSpan.FromHours(3)));
+            Console.WriteLine($"      {r.Seeds} graines, {r.Steps} instantanes, {r.Changes} changements de principale, {r.Returns} retours, " +
+                   $"{r.Failures.Count} injustifies");
+            T.True(r.Failures.Count == 0, r.Failures.Count + " retours sans evenement nouveau, dont : " + string.Join(" ; ", r.Failures.Take(3)));
+            T.True(r.Changes > 1000 && r.Returns > 100, "le fuzz fait bouger la principale");
         });
 
         T.Case("minis : une conversation en attente passe devant des sous-agents plus recents, jamais coupee", () =>
@@ -626,6 +642,31 @@ static class ModelTests
             T.Eq(4, s.MinisOverflow, "debordement");
             T.Eq(B + "," + C + ",ag8,ag7,ag6,ag5", string.Join(",", s.Minis.Select(x => x.Id)), "attentes d'abord, la plus recente en tete, puis les plus recents");
             T.True(s.Minis.Take(2).All(x => x.State == PetState.WaitingUser), "au telephone");
+        });
+
+        T.Case("minis : une conversation qui attend sur le fil d'un sous-agent reste en tete pendant sa fete", () =>
+        {
+            // B attend une autorisation pour son sous-agent ; son fil principal finit un tour a 30 s,
+            // et la fete passe 3 s devant l'attente. Avant, le tri ne la classait plus parmi les
+            // attentes : les huit sous-agents de A, plus recents, la coupaient de l'instantane
+            var m = M(E(K.PromptSubmitted, -100, session: B), E(K.SubagentActivity, -99, session: B, agent: "bsub", detail: "fond"),
+                E(K.PromptSubmitted, 0), E(K.AskedUser, 1, tool: "AskUserQuestion", detail: "qa"));
+            T.Eq(A, m.Snapshot(At(1.5)).MainSessionId, "A attend la premiere : principale");
+            m.Apply(E(K.ToolStarted, 2, session: B, agent: "bsub", tool: "Bash", detail: "bt"));
+            m.Apply(E(K.NeedsUser, 3, session: B, detail: "permission_prompt"));
+            for (int i = 1; i <= 8; i++) m.Apply(E(K.SubagentActivity, 10 + i, agent: "ag" + i, detail: "n" + i));
+            m.Apply(E(K.ToolStarted, 20, session: B, tool: "Bash", detail: "bm"));
+            m.Apply(E(K.ToolFinished, 21, session: B, detail: "bm"));
+            foreach (double t in new[] { 29.5, 30, 31.5, 32.5, 33.5 })
+            {
+                if (t == 30) m.Apply(E(K.TurnEnded, 30, session: B));
+                var s = m.Snapshot(At(t));
+                T.Eq(A, s.MainSessionId, "A principale a " + t);
+                var b = s.Minis.FirstOrDefault(x => x.Id == B);
+                T.True(b != null, $"B dans l'instantane a {t} s : " + string.Join(",", s.Minis.Select(x => x.Id + ":" + x.State)));
+                T.Eq(B, s.Minis[0].Id, "B en tete a " + t);
+                T.Eq(t >= 30 && t < 33 ? PetState.Celebrating : PetState.WaitingUser, b!.State, "etat de B a " + t);
+            }
         });
 
         T.Case("minis : plafond de 6, les plus recents d'abord, le reste en debordement", () =>
@@ -693,47 +734,250 @@ static class ModelTests
 
     static readonly string[] FuzzIds = { A, B, C };
 
-    /// <summary>Principale d'un instantane, et les sessions qui attendent en mini (masque sur FuzzIds).</summary>
-    readonly record struct MainAt(string? Id, bool Waiting, int MinisWaiting)
+    /// <summary>
+    /// Une course de fuzz, au pas de 0,5 s : l'indice de la principale a chaque pas (-1 : aucune)
+    /// et le masque des sessions dont un evenement a ete applique juste avant ce pas.
+    /// </summary>
+    readonly record struct FuzzRun(int[] Mains, int[] Touched);
+
+    sealed record FuzzReport(int Seeds, long Steps, long Changes, long Returns, List<string> Failures);
+
+    /// <summary>Lance les graines en parallele (chacune a son modele) et verifie chaque course.</summary>
+    static FuzzReport FuzzRuns(int seeds, Func<int, FuzzRun> run)
     {
-        public bool OthersWaiting(string id) => (MinisWaiting & (1 << Array.IndexOf(FuzzIds, id))) != 0;
+        long steps = 0, changes = 0, returns = 0;
+        var failures = new System.Collections.Concurrent.ConcurrentBag<(int Seed, string Text)>();
+        Parallel.For(1, seeds + 1, seed =>
+        {
+            var r = run(seed);
+            var (c, back) = CheckReturns(r, seed, failures);
+            Interlocked.Add(ref steps, r.Mains.Length);
+            Interlocked.Add(ref changes, c);
+            Interlocked.Add(ref returns, back);
+        });
+        return new FuzzReport(seeds, steps, changes, returns, failures.OrderBy(f => f.Seed).Select(f => f.Text).ToList());
+    }
+
+    /// <summary>
+    /// Le critere : X quitte la place au pas depart, la reprend au pas retour. Entre les deux, pas
+    /// depart exclu (l'evenement qui a fait partir X ne compte pas), pas retour compris, il faut un
+    /// evenement de X ou d'une des principales intermediaires (Y dans X, Y, X), quelle que soit la
+    /// duree. Sinon, c'est le temps seul qui l'a ramenee : un va-et-vient. Rend le nombre de
+    /// changements de principale et de retours.
+    /// </summary>
+    static (long Changes, long Returns) CheckReturns(FuzzRun r, int seed,
+        System.Collections.Concurrent.ConcurrentBag<(int Seed, string Text)> failures)
+    {
+        var mains = r.Mains;
+        long changes = 0, returns = 0;
+        var leftAt = new Dictionary<int, int>();
+        for (int i = 1; i < mains.Length; i++)
+        {
+            if (mains[i] == mains[i - 1]) continue;
+            changes++;
+            if (mains[i - 1] >= 0) leftAt[mains[i - 1]] = i;
+            int x = mains[i];
+            if (x < 0 || !leftAt.TryGetValue(x, out int left)) continue;
+            returns++;
+            int who = 1 << x;
+            for (int j = left; j < i; j++) if (mains[j] >= 0) who |= 1 << mains[j];
+            bool justified = false;
+            for (int j = left + 1; j <= i && !justified; j++) justified = (r.Touched[j] & who) != 0;
+            if (!justified)
+                failures.Add((seed, $"graine {seed}, {FuzzIds[x]} quitte la place a {left * 0.5:F1} s et la reprend a {i * 0.5:F1} s : " +
+                                    FuzzTrace(mains, left - 2, i + 1)));
+        }
+        return (changes, returns);
+    }
+
+    static string FuzzTrace(int[] mains, int from, int to)
+    {
+        var parts = new List<string>();
+        from = Math.Max(0, from);
+        to = Math.Min(mains.Length - 1, to);
+        for (int i = from; i <= to; i++)
+            if (i == from || mains[i] != mains[i - 1]) parts.Add($"{(mains[i] < 0 ? "-" : FuzzIds[mains[i]])}@{i * 0.5:F1}");
+        return string.Join(" ", parts);
+    }
+
+    /// <summary>Applique les evenements dont l'heure d'application est passee, instantane tous les 0,5 s.</summary>
+    static FuzzRun Play(List<(double Apply, ActivityEvent E, int Session)> all, double seconds)
+    {
+        // tri stable : a heure d'application egale, l'ordre de production
+        var events = all.OrderBy(e => e.Apply).ToList();
+        var model = new ActivityModel();
+        int n = (int)(seconds / 0.5) + 1, p = 0;
+        var mains = new int[n];
+        var touched = new int[n];
+        for (int step = 0; step < n; step++)
+        {
+            double t = step * 0.5;
+            while (p < events.Count && events[p].Apply <= t)
+            {
+                model.Apply(events[p].E);
+                touched[step] |= 1 << events[p].Session;
+                p++;
+            }
+            var s = model.Snapshot(At(t));
+            mains[step] = s.MainSessionId == null ? -1 : Array.IndexOf(FuzzIds, s.MainSessionId);
+        }
+        return new FuzzRun(mains, touched);
+    }
+
+    /// <summary>
+    /// Fuzz scripte de verify-model, repris tel quel : chaque session vit par episodes (tours de 1 a
+    /// 24 actions, outils parfois longs et muets, question ou plan suivis de la notification
+    /// permission_prompt 5 a 7 s apres, demandes du hook sur un outil du fil principal, sous-agents
+    /// de fond sur leur propre horloge, erreurs d'API, sessions tuees), avec des lectures en
+    /// retard (15 % des lignes lues jusqu'a 4 s apres leur heure), des fins de tour en double et
+    /// des api_error dates d'avant la fin du tour mais lus apres elle.
+    /// </summary>
+    static FuzzRun ScriptedFuzz(int seed, int sessions, double hours)
+    {
+        var rng = new Random(seed * 7919 + sessions);
+        var events = new List<(double, ActivityEvent, int)>();
+        for (int i = 0; i < sessions; i++) ScriptSession(rng, i, hours * 3600, events);
+        return Play(events, hours * 3600);
+    }
+
+    /// <summary>Log-uniforme entre a et b.</summary>
+    static double LogUniform(Random r, double a, double b) => Math.Exp(Math.Log(a) + r.NextDouble() * (Math.Log(b) - Math.Log(a)));
+
+    static void ScriptSession(Random r, int idx, double end, List<(double, ActivityEvent, int)> events)
+    {
+        string sid = FuzzIds[idx], cwd = @"C:\work\" + sid;
+        int serial = 0;
+        string NewId() => sid + "-" + ++serial;
+        void Add(double time, K kind, string? agent = null, string? tool = null, string? detail = null, bool error = false, bool hook = false)
+        {
+            if (time > end) return;
+            double lag = hook ? r.NextDouble() * 0.2 : (r.NextDouble() < 0.15 ? r.NextDouble() * 4 : r.NextDouble() * 0.1);
+            events.Add((time + lag, new ActivityEvent(At(time), kind, sid, agent, cwd, tool, error, detail), idx));
+        }
+        void Hook(double time, string type) => Add(time, K.NeedsUser, detail: type, hook: true);
+
+        double t = LogUniform(r, 1, 600);
+        // un hook d'une session inconnue avant son premier transcript : ignore
+        if (r.NextDouble() < 0.2) Hook(t - 0.5, "permission_prompt");
+        while (t < end)
+        {
+            Add(t, K.PromptSubmitted);
+            int actions = r.Next(1, 25);
+            bool killed = false;
+            for (int a = 0; a < actions && t < end; a++)
+            {
+                t += r.NextDouble() < 0.7 ? LogUniform(r, 0.3, 20) : LogUniform(r, 20, 400);
+                double x = r.NextDouble();
+                if (x < 0.30)
+                {
+                    // outil, parfois long et muet (Bash de 5 a 40 min)
+                    var id = NewId();
+                    Add(t, K.ToolStarted, tool: "Bash", detail: id);
+                    t += r.NextDouble() < 0.85 ? LogUniform(r, 0.2, 30) : LogUniform(r, 300, 2400);
+                    Add(t, K.ToolFinished, detail: id, error: r.Next(10) == 0);
+                }
+                else if (x < 0.42)
+                {
+                    // question ou plan, puis la notification permission_prompt du meme dialogue ~6 s apres
+                    var id = NewId();
+                    Add(t, K.AskedUser, tool: r.Next(2) == 0 ? "AskUserQuestion" : "ExitPlanMode", detail: id);
+                    if (r.NextDouble() < 0.7) Hook(t + 5 + r.NextDouble() * 2, "permission_prompt");
+                    if (r.NextDouble() < 0.08) { killed = true; break; }
+                    t += LogUniform(r, 2, 4800);
+                    Add(t, K.ToolFinished, detail: id);
+                }
+                else if (x < 0.56)
+                {
+                    // demande d'autorisation du hook sur un outil du fil principal
+                    var id = NewId();
+                    Add(t, K.ToolStarted, tool: "Bash", detail: id);
+                    Hook(t + 0.3 + r.NextDouble(), r.Next(5) == 0 ? "elicitation_dialog" : "permission_prompt");
+                    if (r.NextDouble() < 0.08) { killed = true; break; }
+                    t += LogUniform(r, 1.5, 1500);
+                    // autorisation accordee : l'outil tourne ensuite, parfois longtemps et muet
+                    t += r.NextDouble() < 0.8 ? LogUniform(r, 0.2, 20) : LogUniform(r, 200, 1500);
+                    Add(t, K.ToolFinished, detail: id);
+                }
+                else if (x < 0.72)
+                {
+                    // sous-agent de fond, sur sa propre horloge
+                    ScriptAgent(r, t, NewId, Add, Hook);
+                }
+                else if (x < 0.78) Add(t, K.ApiError, error: true, detail: "api_error");
+                else if (x < 0.83) Add(t, K.SessionActivity);
+                else if (x < 0.86) { killed = true; break; }
+            }
+            if (!killed)
+            {
+                t += LogUniform(r, 0.5, 30);
+                Add(t, K.TurnEnded, detail: r.Next(6) == 0 ? "interrupted" : null);
+                // bloc thinking puis text
+                if (r.NextDouble() < 0.3) Add(t + 0.2, K.TurnEnded);
+                // ecrit apres, date d'avant
+                if (r.NextDouble() < 0.15) Add(t - r.NextDouble() * 2, K.ApiError, error: true, detail: "api_error");
+                t += r.NextDouble() < 0.6 ? LogUniform(r, 2, 600) : LogUniform(r, 600, 10000);
+            }
+            // session tuee, reprise bien plus tard (ou jamais)
+            else t += LogUniform(r, 600, 12000);
+        }
+    }
+
+    static void ScriptAgent(Random r, double t0, Func<string> newId,
+        Action<double, K, string?, string?, string?, bool, bool> add, Action<double, string> hook)
+    {
+        string ag = newId();
+        double t = t0 + LogUniform(r, 0.2, 3);
+        add(t, K.SubagentActivity, ag, null, "fond", false, false);
+        int steps = r.Next(1, 30);
+        for (int i = 0; i < steps; i++)
+        {
+            t += LogUniform(r, 0.3, 60);
+            double x = r.NextDouble();
+            if (x < 0.55)
+            {
+                var id = newId();
+                add(t, K.ToolStarted, ag, "Bash", id, false, false);
+                if (r.NextDouble() < 0.12) hook(t + 0.3 + r.NextDouble(), "permission_prompt");
+                t += r.NextDouble() < 0.85 ? LogUniform(r, 0.2, 30) : LogUniform(r, 120, 2700);
+                // agent tue, outil jamais fini
+                if (r.NextDouble() < 0.05) return;
+                add(t, K.ToolFinished, ag, null, id, r.Next(12) == 0, false);
+            }
+            else if (x < 0.9) add(t, K.SubagentActivity, ag, null, "fond", false, false);
+            else if (x < 0.95) add(t, K.ApiError, ag, null, "api_error", true, false);
+            // muet a jamais, sans fin
+            else return;
+        }
+        t += LogUniform(r, 0.3, 30);
+        if (r.NextDouble() < 0.5) add(t, K.TurnEnded, ag, null, null, false, false);
+        else add(t, K.SubagentEnded, ag, null, "completed", false, false);
     }
 
     /// <summary>
     /// Trois sessions qui vivent au hasard : tours, outils, questions et plans, demandes du hook,
     /// sous-agents de fond, erreurs, fins, et des silences de quelques secondes a plus de deux
-    /// heures, qui font jouer tous les delais. Instantane tous les 0,5 s, comme l'app. Rend la
-    /// principale de chaque pas, et le masque des sessions qui ont recu un evenement a ce pas.
+    /// heures, qui font jouer tous les delais. Evenements appliques a leur heure.
     /// </summary>
-    static (List<MainAt> Mains, List<int> Touched) Fuzz(int seed, TimeSpan duration)
+    static FuzzRun Fuzz(int seed, TimeSpan duration)
     {
         var rng = new Random(seed);
-        var model = new ActivityModel();
         var sessions = FuzzIds.Select(id => new FuzzSession(id) { Next = rng.NextDouble() * 120 }).ToArray();
-        var mains = new List<MainAt>();
-        var touched = new List<int>();
+        var events = new List<(double, ActivityEvent, int)>();
+        // meme tirage qu'avant : session par session, dans l'ordre, au fil des pas de 0,5 s
         for (int step = 0; step * 0.5 <= duration.TotalSeconds; step++)
         {
             double t = step * 0.5;
-            int hit = 0;
             for (int i = 0; i < sessions.Length; i++)
             {
                 var f = sessions[i];
                 while (f.Next <= t)
                 {
-                    foreach (var e in f.Act(rng)) model.Apply(e);
-                    hit |= 1 << i;
+                    foreach (var e in f.Act(rng)) events.Add((t, e, i));
                     f.Next += FuzzDelay(rng);
                 }
             }
-            var s = model.Snapshot(At(t));
-            int waiting = 0;
-            foreach (var mini in s.Minis)
-                if (mini.Kind == "session" && mini.State == PetState.WaitingUser) waiting |= 1 << Array.IndexOf(FuzzIds, mini.Id);
-            mains.Add(new MainAt(s.MainSessionId, s.State == PetState.WaitingUser, waiting));
-            touched.Add(hit);
         }
-        return (mains, touched);
+        return Play(events, duration.TotalSeconds);
     }
 
     static double FuzzDelay(Random r) => r.NextDouble() switch

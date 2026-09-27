@@ -47,7 +47,9 @@ tourne autour des pieds du principal (un tour en 40 s), derrière lui sur l'arc 
 sur l'arc avant. Un sous-agent garde la même scène de travail du début à la fin. Au-delà de
 six minis, un badge `+N` compte les autres. Les conversations qui attendent ta réponse passent
 en tête, la plus récente attente d'abord, puis les plus récents : des sous-agents ne font jamais
-disparaître une attente du tableau.
+disparaître une attente du tableau, même pendant la fête de 3 s qui passe devant une attente
+(demande d'un sous-agent quand le fil principal finit son tour). Cela vaut jusqu'à six attentes
+à la fois : au-delà, les plus anciennes n'ont plus de mini, comptées dans le `+N`.
 
 Pour que l'arc avant ne passe jamais devant le visage, le principal monte de 42 px (sprite)
 tant qu'il y a des minis : les minis de devant restent sous son museau. Vérifié au pixel sur
@@ -63,23 +65,34 @@ du principal ou de son mini, avec un cadre jaune ; survolée, celle d'un mini ga
 (plus longue, elle pourrait changer de place et fuir le curseur). Près du bord de l'écran, une
 étiquette glisse vers l'intérieur plutôt que d'être coupée : ses bords restent dans la zone de
 travail de l'écran du hamster. Une étiquette de mini tourne avec lui, mais ne se pose jamais sur le visage du
-principal ni sur une autre étiquette (elle monte alors au-dessus), et évite toute sa tête, bulle
-du téléphone et combiné compris (ses pixels opaques du haut jusqu'au bas du visage), tant que la
-place le permet. Si elle gêne, elle passe à côté de la tête, du côté du mini ; si la place manque
-de ce côté (principal poussé contre le bord de l'écran, nom long), elle se pose dessous, sur le
-mini lui-même, quitte à cacher une partie de celui-ci : de l'autre côté du principal, elle
-semblerait appartenir à un autre mini. Rien ne tient hors de la tête : mêmes règles autour du
-seul visage. Sa place se choisit sans le rebond du mini (±1 px sprite), qui ne fait que la
+principal ni sur une autre étiquette (elle monte alors au-dessus), et évite sa zone de tête tant
+que la place le permet. Cette zone est **stable** : la même pour tous les clips et les deux sens,
+calculée une fois. C'est l'union, sur les frames des clips de base du personnage (repos, marche,
+clignement, réaction, téléphone), des pixels opaques du haut jusqu'au bas du visage, sans les
+accessoires qui ne sont pas de lui (cœur de la réaction, socle et cordon du téléphone) mais avec
+la bulle et le combiné du téléphone ; elle contient aussi le visage de chaque clip. Tirée du clip
+courant, avec ses accessoires (feux d'artifice, bol, tableau), elle faisait sauter l'étiquette
+d'un mini jusqu'à 338 px quand le principal changeait de clip ; désormais sa place ne dépend pas
+du clip. Si elle gêne, l'étiquette passe à côté de la zone de tête, du côté du mini ; si la place
+manque de ce côté (principal poussé contre le bord de l'écran, nom long), elle se pose dessous,
+sur le mini lui-même, mais jamais sur le corps du principal (du bas du visage à la ligne de
+base). Rien ne tient hors de la zone de tête : mêmes règles autour du seul visage. Rien ne tient
+non plus : elle reste au-dessus du mini, quitte à toucher la zone de tête, montée au-dessus du
+visage s'il le faut. Elle ne passe jamais de l'autre côté du principal, où elle semblerait
+appartenir à un autre mini, sauf si elle est plus large que la place entre le bord de l'écran et
+le principal. Sa place se choisit sans le rebond du mini (±1 px sprite), qui ne fait que la
 décaler verticalement avec lui : elle ne saute pas d'un côté à l'autre au rythme du sautillement,
 et n'empiète sur le visage à aucun moment du rebond. Vérifié tout le tour de l'orbite (au quart
 de degré pour le rebond), sur tous les clips du principal, miroir compris, aux trois échelles,
-au bord de l'écran et au milieu, par `Hamster.App.Tests`.
+au bord de l'écran et au milieu, par `Hamster.App.Tests`. L'étiquette du principal, elle, reste
+posée au-dessus du clip courant.
 
 **Sons**, désactivés par défaut (menu → **Son**) : téléphone (`Windows Ringin.wav`) quand une
-conversation de plus se met à attendre ta réponse, la principale ou celle d'un mini ; une
-attente déjà annoncée ne resonne pas quand son mini prend la place principale, ni quand la fête
-de fin de tour (3 s) la masque un instant (demande d'un sous-agent pendant que le principal
-finit son tour). `tada.wav` en
+conversation de plus se met à attendre ta réponse, la principale ou celle d'un mini. Une
+attente se reconnaît à son heure de début : déjà annoncée, elle ne resonne pas tant que ce début
+ne change pas, ni quand son mini prend la place principale, ni quand la fête de fin de tour
+(3 s) la masque un instant (demande d'un sous-agent pendant que le principal finit son tour),
+ni quand elle revient après avoir été cachée (plus de six attentes à la fois). `tada.wav` en
 fin de tâche, `Windows Navigation Start.wav` à l'apparition d'un sous-agent, au plus un toutes
 les 10 s. Jamais en boucle, rien pendant les 3 s d'amorçage (les transcripts relus ne sont pas
 des nouveautés) ni tant que le hamster est en pause ou caché. Coupés quand Windows refuse les
@@ -241,13 +254,23 @@ si une mise à jour de Claude Code le change.
   moins de 2 min, ou si elle est postérieure à la dernière activité de la principale. Une attente
   périmée rend la place à une attente fraîche, sinon à une conversation active qui s'est
   manifestée depuis son début ; elle reste visible en mini, au téléphone, avec son étiquette, et
-  ne reprend pas la place tant que dure la même attente, même quand cette conversation s'arrête
-  (le principal se repose alors, le mini reste au téléphone). Une nouvelle demande de sa part,
-  ou sa réponse, la rend de nouveau candidate.
-  Une conversation ne prend la place, par l'effet du temps, que si elle doit rester active encore
-  10 s au moins sans rien écrire : pas d'aller-retour d'une image à l'autre.
+  ne reprend pas la place tant qu'elle ne dit rien de neuf, même quand la conversation qui l'a
+  remplacée s'arrête (le principal se repose alors, le mini reste au téléphone), et même quand
+  son attente expire alors que ses sous-agents la gardent active. De même, une principale qui
+  perd la place au profit d'une attente fraîche ne la reprend, quand cette attente s'éteint,
+  qu'après un nouvel événement d'elle-même ou de la conversation qui l'a remplacée. Tout nouvel
+  événement de sa part (nouvelle demande, réponse, activité d'un sous-agent) la rend de nouveau
+  candidate. Une conversation ne prend la place, par l'effet du temps, que si elle doit rester
+  active encore 10 s au moins sans rien écrire. Ensemble, ces règles excluent tout aller-retour
+  X, Y, X sans événement nouveau de X ou de Y entre les deux changements, si longtemps après que
+  ce soit : vérifié par `Hamster.Activity.Tests` sur 1000 graines de 4 h d'un fuzz scripté
+  (tours, outils longs et muets, questions et autorisations, sous-agents de fond, sessions
+  tuées, lectures en retard) et 120 graines de 3 h d'un fuzz aléatoire.
 - **Priorité dans les minis.** Au-delà de six minis, les conversations en attente restent : elles
-  passent en tête, la plus récente d'abord, avant les sous-agents et les autres conversations.
+  passent en tête, la plus récente d'abord, avant les sous-agents et les autres conversations,
+  y compris pendant la fête de 3 s qui passe devant une attente encore en cours. C'est exact
+  jusqu'à six attentes à la fois : au-delà, les plus anciennes sont comptées dans le badge `+N`,
+  sans mini ni étiquette, et la sonnerie ne les annonce pas une seconde fois quand elles reviennent.
 - **Conversation inconnue.** Une notification pour une conversation dont aucun transcript n'a
   encore rien dit est ignorée, et comptée dans l'état du hook de l'overlay de debug
   (`N ignorees`).

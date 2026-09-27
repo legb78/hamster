@@ -22,15 +22,15 @@ public static partial class Clips
             p.Mouth = mouth[i];
             int f = i;
             int dy = bob[i];
-            frames[i] = new Scene()
-                .Layer(c => Props.SpeechBubble(c, bounce[f]))
-                .Layer(Props.PhoneBase)
-                .Hamster(p)
-                .Layer(c => Props.Cord(c, f), outline: false)
-                .Layer(c => Shifted(c, 0, dy, Props.Handset))
-                .Layer(c => HamsterSprite.DrawPaw(c, 101, 82 + dy))
-                .Shadow(115, 12)
-                .Build();
+            // sans Extras (BuildCharacter) : ni socle, ni cordon, ni ombre du socle
+            var scene = new Scene().Layer(c => Props.SpeechBubble(c, bounce[f]));
+            if (k.Extras) scene.Layer(Props.PhoneBase);
+            scene.Hamster(p);
+            if (k.Extras) scene.Layer(c => Props.Cord(c, f), outline: false);
+            scene.Layer(c => Shifted(c, 0, dy, Props.Handset))
+                .Layer(c => HamsterSprite.DrawPaw(c, 101, 82 + dy));
+            if (k.Extras) scene.Shadow(115, 12);
+            frames[i] = scene.Build();
         }
         return new Clip(Phone, frames, 6, true, false) { Mirrorable = false };
     }

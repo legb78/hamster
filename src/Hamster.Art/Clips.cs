@@ -91,8 +91,23 @@ public static partial class Clips
         return all.ToDictionary(c => c.Name);
     }
 
-    /// <summary>Ce que tous les constructeurs de clips partagent : la teinte et le noeud visible ou non.</summary>
-    readonly record struct Kit(int Hue, bool Bow)
+    /// <summary>
+    /// Les clips de base du personnage (idle, walk, blink, react, phone), sans les accessoires
+    /// qui ne sont pas de lui : ni le coeur de react, ni le socle, le cordon et l'ombre du socle
+    /// de phone. La bulle et le combine de phone restent : ils font partie de la tete au
+    /// telephone. L'app en tire une zone de tete qui ne depend pas du clip affiche.
+    /// </summary>
+    public static IReadOnlyList<Clip> BuildCharacter(int bowHue = 0)
+    {
+        var k = new Kit(bowHue, true, Extras: false);
+        return new[] { BuildIdle(k), BuildWalk(k), BuildBlink(k), BuildReact(k), BuildPhone(k) };
+    }
+
+    /// <summary>
+    /// Ce que tous les constructeurs de clips partagent : la teinte, le noeud visible ou non, et
+    /// les accessoires qui ne sont pas du personnage (Extras), dessines ou non.
+    /// </summary>
+    readonly record struct Kit(int Hue, bool Bow, bool Extras = true)
     {
         public Pose Base()
         {
@@ -160,7 +175,7 @@ public static partial class Clips
             var p = k.Base();
             p.BodyDy = jump[i];
             p.Squash = squash[i];
-            p.Heart = i >= 3;
+            p.Heart = k.Extras && i >= 3;
             p.HeartDy = i >= 3 ? -(i - 3) * 3 : 0;
             frames[i] = HamsterSprite.Render(p);
         }
